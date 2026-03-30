@@ -1,10 +1,10 @@
-**The Middle Ground 
-**Meet halfway, no compromises.
+The Middle Ground 
+Meet halfway, no compromises.
 
 The Middle Ground is a social coordination platform designed to eliminate the "planning tax" of hanging out. It solves the "is this too far for you?" dilemma by automatically calculating the statistically fairest meeting points between two or more locations, providing live ETAs for all parties, and building optimized multi-stop itineraries.
 
-**Live Demo
-**[INSERT DEMO LINK HERE]
+Live Demo
+[INSERT DEMO LINK HERE]
 
 The "Fairness" Engine (Core)
 Dual-Point Proximity: Input two starting locations to highlight a "Sweet Spot" zone that balances travel time for everyone.
@@ -31,8 +31,8 @@ Itinerary Stealing: See a friend’s past hangout (Target → Coffee → Park) a
 Digital Scrapbooking: Once a hangout is complete, the app generates a shared "Adventure Log" for photos and notes with a "Verified: Met in the Middle" badge.
 
 ---------------------------------------------------------------------------------------------------------------------------
-**Tech Stack
-**Frontend: React 18, Vite, Lucide Icons, Google Fonts (Playfair Display & DM Sans).
+Tech Stack
+Frontend: React 18, Vite, Lucide Icons, Google Fonts (Playfair Display & DM Sans).
 
 Styling: Modern CSS3 (Responsive, Dashboard-style with internal @import fonts).
 
