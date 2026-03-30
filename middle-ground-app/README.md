@@ -1,16 +1,44 @@
-# React + Vite
+The Middle Ground 
+Meet halfway, no compromises.
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+The Middle Ground is a social coordination platform designed to eliminate the "planning tax" of hanging out. It solves the "is this too far for you?" dilemma by automatically calculating the statistically fairest meeting points between two or more locations, providing live ETAs for all parties, and building optimized multi-stop itineraries.
 
-Currently, two official plugins are available:
+Live Demo
+[INSERT DEMO LINK HERE]
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+The "Fairness" Engine (Core)
+Dual-Point Proximity: Input two starting locations to highlight a "Sweet Spot" zone that balances travel time for everyone.
 
-## React Compiler
+Live ETA Sync: Displays simultaneous travel times (e.g., "11 mins for you | 14 mins for Aaliyah") to remove confirmation fatigue.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Vibe-Based Discovery: Filter potential spots by "Chill," "High Energy," "Quiet," or "Casual Dining" to match the group's mood.
 
-## Expanding the ESLint configuration
+Smart Itinerary Builder
+Chain-Link Routing: Add multiple stops (e.g., Coffee → Shopping → Dinner) and the app reorders them for the most efficient path.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+"On Your Way" Suggestions: Real-time banners suggest highly-rated spots located physically between your existing itinerary stops.
+
+Route Optimization: A one-touch "Optimize" button to sort your day by distance from the "Middle Ground".
+
+Collaborative Invite System
+The "Counter-Offer": Friends receive interactive invites where they can "Accept," "Decline," or "Counter" with a nearby alternative spot.
+
+Status Tracking: Real-time dashboard showing which invites are pending, accepted, or declined.
+
+Adventure Feed & Journaling
+Itinerary Stealing: See a friend’s past hangout (Target → Coffee → Park) and "Steal" the exact route for your own next plan.
+
+Digital Scrapbooking: Once a hangout is complete, the app generates a shared "Adventure Log" for photos and notes with a "Verified: Met in the Middle" badge.
+---------------------------------------------------------------------------------------------------------------------------
+Tech Stack
+Frontend: React 18, Vite, Lucide Icons, Google Fonts (Playfair Display & DM Sans).
+
+Styling: Modern CSS3 (Responsive, Dashboard-style with internal @import fonts).
+
+Backend: Node.js / Express
+
+Database: MongoDB Atlas 
+
+Deployment: Vercel (Frontend) & AWS EC2 (Backend).
+
+CI/CD: GitHub Actions for automated deployment on push to main.
