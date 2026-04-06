@@ -28,7 +28,7 @@ router.get('/', requireAuth, (req, res) => {
     `);
 
     const received = db.prepare(`
-      SELECT inv.*, sender.name as sender_name, sender.avatar_letter as sender_avatar, sender.color as sender_color,
+      SELECT inv.*, sender.name as sender_name, sender.avatar_letter as sender_avatar, sender.color as sender_color, sender.location as sender_location,
         it.name as itinerary_name, it.user_location, it.friend_location, it.user_id as it_user_id, it.friend_id as it_friend_id,
         inv.event_date
       FROM invites inv JOIN users sender ON inv.sender_id = sender.id
@@ -37,7 +37,7 @@ router.get('/', requireAuth, (req, res) => {
     `).all(userId).map(inv => ({ ...inv, stops: getStops.all(inv.itinerary_id) }));
 
     const sent = db.prepare(`
-      SELECT inv.*, receiver.name as receiver_name, receiver.avatar_letter as receiver_avatar, receiver.color as receiver_color,
+      SELECT inv.*, receiver.name as receiver_name, receiver.avatar_letter as receiver_avatar, receiver.color as receiver_color, receiver.location as receiver_location,
         it.name as itinerary_name, it.user_location, it.friend_location, it.user_id as it_user_id, it.friend_id as it_friend_id,
         inv.event_date
       FROM invites inv JOIN users receiver ON inv.receiver_id = receiver.id

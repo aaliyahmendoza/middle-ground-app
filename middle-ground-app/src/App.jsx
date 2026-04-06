@@ -55,41 +55,81 @@ function MiniMap({ lat, lng, emoji, color = "#bb4b1e" }) {
   return <div ref={mapRef} style={{ width: '100%', height: '100%' }} />;
 }
 
-function DirectionsMap({ origin, destination, mode }) {
+function DirectionsMap({ origin, destination, mode, onRoutesFound, selectedRouteIndex }) {
   const mapRef = useRef(null);
+  const rendererRef = useRef(null);
+  const mapInstanceRef = useRef(null);
+  const resultRef = useRef(null);
 
+  const originKey = origin ? `${origin.lat},${origin.lng}` : '';
+  const destKey = destination ? `${destination.lat},${destination.lng}` : '';
+
+  // 1. Initial Map and Renderer Creation (Only once)
   useEffect(() => {
-    if (!window.google?.maps || !mapRef.current || !origin || !destination) return;
+    if (!window.google?.maps || !mapRef.current || mapInstanceRef.current) return;
     
     const map = new window.google.maps.Map(mapRef.current, {
-      center: { lat: 37.5, lng: -122 },
+      center: origin || { lat: 37.5, lng: -122 },
       zoom: 12,
       disableDefaultUI: true,
       zoomControl: true,
     });
+    mapInstanceRef.current = map;
 
-    const panel = document.getElementById('directions-panel');
-    if (panel) panel.innerHTML = '<div style="padding: 20px; text-align: center; color: #9A8A78;">Calculating route...</div>';
-
-    const directionsService = new window.google.maps.DirectionsService();
-    const directionsRenderer = new window.google.maps.DirectionsRenderer({
+    const renderer = new window.google.maps.DirectionsRenderer({
       map,
-      panel: panel,
+      hideRouteList: true,
       polylineOptions: { strokeColor: '#D4622A', strokeOpacity: 0.8, strokeWeight: 5 }
     });
+    rendererRef.current = renderer;
+  }, []);
 
+  // 2. Route Calculation (Only when origin/dest/mode changes)
+  useEffect(() => {
+    if (!mapInstanceRef.current || !rendererRef.current || !origin || !destination) return;
+    
+    const panel = document.getElementById('directions-panel');
+    if (panel) panel.innerHTML = '';
+    
+    const directionsService = new window.google.maps.DirectionsService();
     directionsService.route({
       origin,
       destination,
+      provideRouteAlternatives: true,
       travelMode: window.google.maps.TravelMode[mode || 'DRIVING']
     }, (result, status) => {
       if (status === 'OK') {
-        directionsRenderer.setDirections(result);
+        resultRef.current = result;
+        rendererRef.current.setDirections(result);
+        
+        // Finalize state and panel
+        setTimeout(() => {
+          if (panel) rendererRef.current.setPanel(panel);
+          rendererRef.current.setRouteIndex(selectedRouteIndex || 0);
+        }, 50);
+
+        if (onRoutesFound) {
+          const routes = result.routes.map((r, i) => ({
+            index: i,
+            summary: r.summary,
+            distance: r.legs[0].distance?.text,
+            duration: r.legs[0].duration?.text,
+          }));
+          onRoutesFound(routes);
+        }
       } else {
         if (panel) panel.innerHTML = `<div style="padding: 20px; text-align: center; color: #D4622A;">Could not find route: ${status}. Try "Open maps" button below!</div>`;
+        if (onRoutesFound) onRoutesFound([]);
       }
     });
-  }, [origin, destination, mode]);
+  }, [originKey, destKey, mode]);
+
+  // 3. Route Selection (Instant update, no re-calc)
+  useEffect(() => {
+    if (rendererRef.current && resultRef.current) {
+      rendererRef.current.setRouteIndex(selectedRouteIndex);
+    }
+  }, [selectedRouteIndex]);
 
   return <div ref={mapRef} style={{ width: '100%', height: '100%', background: '#F8F3EE' }} />;
 }
@@ -132,6 +172,9 @@ export default function App() {
   const [sharePhone, setSharePhone] = useState("");
   const [showInviteLink, setShowInviteLink] = useState(false);
   const [showExploreModal, setShowExploreModal] = useState(null); // {lat, lng, name}
+  const [directionRoutes, setDirectionRoutes] = useState([]);
+  const [directionsLoaded, setDirectionsLoaded] = useState(false);
+  const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
   
   const [showSettings, setShowSettings] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
@@ -222,7 +265,10 @@ export default function App() {
     setSelectedFriends(prev =>
       prev.find(s => s.id === f.id) ? prev.filter(s => s.id !== f.id) : [...prev, f]
     );
-    if (!friendLocations[f.id]) setFriendLocations(p => ({ ...p, [f.id]: f.location || "" }));
+    // Bug #9: Always auto-fill friend's location from their profile
+    // This pre-populates the location from their profile so you don't have to ask.
+    // The user can override it for THIS plan only - it won't change the friend's profile.
+    if (friendLocations[f.id] === undefined) setFriendLocations(p => ({ ...p, [f.id]: f.location || "" }));
   }
 
   async function handleSearch() {
@@ -230,9 +276,9 @@ export default function App() {
     if (planMode === "city" && (!cityLocation || selectedFriends.length === 0)) return;
     setSearchLoading(true); setSearched(false);
     try {
-      if (planMode === "middle_ground" && user?.location !== yourLocation) {
-        await api.updateUser({ location: yourLocation }).catch(() => {});
-      }
+      // Bug #9: Do NOT auto-save location changes to profile during search.
+      // Location changes here are ONE-TIME for this plan only.
+      // The user's profile location should only change via Settings.
       
       const locs = [];
       if (planMode === "city") {
@@ -271,22 +317,30 @@ export default function App() {
     const stop = itinerary[idx];
     if (!stop) return;
     
-    // If we're suggesting changes, we might want to update the plan even if coords aren't fully loaded
-    // but for ETA calculation we need origin. 
-    // Fallback to yourLocation string if allCoords[0] isn't available yet.
-    let origin = idx === 0 ? (allCoords[0] || yourLocation) : { lat: itinerary[idx - 1].lat, lng: itinerary[idx - 1].lng };
+    // Bug #6 & #7: Properly update transport mode AND recalculate ETA
+    // For multi-stop: idx > 0 uses previous stop as origin, idx === 0 uses user's location
+    let origin;
+    if (idx === 0) {
+      origin = allCoords[0] || yourLocation || user?.location || '';
+    } else {
+      origin = { lat: itinerary[idx - 1].lat, lng: itinerary[idx - 1].lng };
+    }
+    
+    // Immediately update mode so UI reflects change
+    setItinerary(prev => prev.map((s, i) => i === idx ? { ...s, transport_mode: mode } : s));
     
     try {
-      setItinerary(prev => prev.map((s, i) => i === idx ? { ...s, transport_mode: mode } : s));
       const dir = await api.getDirections({ origin, destination: { lat: stop.lat, lng: stop.lng }, mode: mode.toLowerCase() });
       setItinerary(prev => prev.map((s, i) => i === idx ? {
         ...s, transport_mode: mode,
-        etas: (s.etas || []).map((e, ei) => ei === 0 ? { ...e, text: dir.duration?.text || '', seconds: dir.duration?.value || 0 } : e),
+        etas: [
+          { label: "You", text: dir.duration?.text || '', seconds: dir.duration?.value || 0 },
+          ...(s.etas?.slice(1) || []),
+        ],
       } : s));
     } catch (err) { 
       console.error("Transport update failed:", err);
-      // Even if ETA fails, at least update the mode
-      setItinerary(prev => prev.map((s, i) => i === idx ? { ...s, transport_mode: mode } : s));
+      // Even if ETA fails, mode is already updated
     }
   }
 
@@ -330,9 +384,13 @@ export default function App() {
       }
 
       showToast(`📬 ${suggestingInviteId ? "Suggestion sent!" : "Invite sent!"}`);
-      setShowInviteModal(false); setItinerary([]); setTab("invites");
+      // Bug #5: Close BOTH the invite modal AND the explore panel
+      setShowInviteModal(false);
+      setShowExploreModal(null);
+      setItinerary([]); setTab("invites");
       setSuggestingInviteId(null); setDraftOriginalItinerary(null); setSuggestMessage("");
       setEventDate(""); setStopSchedules({});
+      setSearched(false); setMidpoint(null); setAllCoords([]);
       api.listInvites().then(d => setInvites(d)).catch(() => {});
     } catch (err) { showToast("Failed: " + err.message); }
   }
@@ -403,13 +461,25 @@ export default function App() {
 
   async function handleSuggestChanges(inv) {
     const isWeFriendInOriginal = inv.it_friend_id === user.id;
-    setYourLocation(isWeFriendInOriginal ? inv.friend_location : inv.user_location);
-    const otherPersonLoc = isWeFriendInOriginal ? inv.user_location : inv.friend_location;
+    
+    // Bug #9: Use PROFILE location as default, not just the invite's stored location.
+    // The user's profile location is the default. If the invite had a different location,
+    // still fall back to profile. The user can override for THIS plan only.
+    const myProfileLoc = user?.location || '';
+    const myInviteLoc = isWeFriendInOriginal ? inv.friend_location : inv.user_location;
+    // Use profile location as primary default, fall back to invite location
+    setYourLocation(myProfileLoc || myInviteLoc || '');
     
     const otherPersonId = inv.sender_id === user.id ? inv.receiver_id : inv.sender_id;
     const otherPersonName = inv.sender_id === user.id ? inv.receiver_name : inv.sender_name;
     const otherPersonColor = inv.sender_id === user.id ? inv.receiver_color : inv.sender_color;
     const otherPersonAvatar = inv.sender_id === user.id ? inv.receiver_avatar : inv.sender_avatar;
+    // Bug #9: Get friend's profile location from the friends list
+    const otherPersonFromFriends = friends.find(f => f.id === otherPersonId);
+    const otherProfileLoc = otherPersonFromFriends?.location || '';
+    const otherInviteLoc = isWeFriendInOriginal ? inv.user_location : inv.friend_location;
+    // Use the friend's profile location as default, fall back to invite data
+    const otherPersonLoc = otherProfileLoc || otherInviteLoc || '';
 
     setFriendLocations(prev => ({ ...prev, [otherPersonId]: otherPersonLoc }));
     const friendObj = { id: otherPersonId, name: otherPersonName, color: otherPersonColor, avatar_letter: otherPersonAvatar, location: otherPersonLoc };
@@ -428,7 +498,7 @@ export default function App() {
         emoji: em,
         etas: [
           { label: "You", text: s.eta_text_user || '', seconds: s.eta_seconds_user || 0 },
-          { label: inv.sender_name || "Friend", text: s.eta_text_friend || '', seconds: s.eta_seconds_friend || 0 }
+          { label: otherPersonName || "Friend", text: s.eta_text_friend || '', seconds: s.eta_seconds_friend || 0 }
         ],
         transport_mode: s.transport_mode || 'DRIVING'
       };
@@ -447,34 +517,66 @@ export default function App() {
     setTab("plan");
     showToast("Loaded original plan for editing");
     
-    // Automatically recalculate midpoint & directions if possible
+    // Bug #4 & #7: Automatically recalculate midpoint & directions
     try {
-      const locs = [{ label: "You", address: isWeFriendInOriginal ? inv.friend_location : inv.user_location }];
+      const myLoc = myProfileLoc || myInviteLoc || '';
+      const locs = [{ label: "You", address: myLoc }];
       locs.push({ label: otherPersonName, address: otherPersonLoc });
       const data = await api.searchMidpoint(locs);
       setAllCoords(data.coords.map(c => ({ lat: c.lat, lng: c.lng })));
       setPeopleLabels(data.coords.map(c => c.label));
       setMidpoint(data.midpoint);
       setSearched(true);
+      
+      // Bug #7: Recalculate ETAs for all restored stops with proper origins
+      // For multi-stop: origin is previous stop (not user location) for idx > 0
+      const userCoord = data.coords[0] ? { lat: data.coords[0].lat, lng: data.coords[0].lng } : null;
+      const friendCoord = data.coords[1] ? { lat: data.coords[1].lat, lng: data.coords[1].lng } : null;
+      if (userCoord && restored.length > 0) {
+        const updatedStops = [...restored];
+        for (let i = 0; i < updatedStops.length; i++) {
+          const stop = updatedStops[i];
+          // Bug #10: For idx > 0, use previous stop as origin
+          const userOrigin = i === 0 ? userCoord : { lat: updatedStops[i-1].lat, lng: updatedStops[i-1].lng };
+          const friendOrigin = i === 0 ? (friendCoord || userCoord) : { lat: updatedStops[i-1].lat, lng: updatedStops[i-1].lng };
+          try {
+            const [userDir, friendDir] = await Promise.all([
+              api.getDirections({ origin: userOrigin, destination: { lat: stop.lat, lng: stop.lng }, mode: (stop.transport_mode || 'DRIVING').toLowerCase() }),
+              friendCoord && i === 0 ? api.getDirections({ origin: friendOrigin, destination: { lat: stop.lat, lng: stop.lng }, mode: (stop.transport_mode || 'DRIVING').toLowerCase() }) : Promise.resolve(null),
+            ]);
+            updatedStops[i] = {
+              ...stop,
+              etas: [
+                { label: "You", text: userDir.duration?.text || '', seconds: userDir.duration?.value || 0 },
+                { label: otherPersonName || "Friend", text: (friendDir?.duration?.text || stop.etas?.[1]?.text || ''), seconds: (friendDir?.duration?.value || stop.etas?.[1]?.seconds || 0) },
+              ]
+            };
+          } catch { /* keep original ETA data */ }
+        }
+        setItinerary(updatedStops);
+      }
     } catch { 
       setSearched(true); // Don't hide the map even if geocode fails
     }
   }
 
   function getRouteNarrative() {
+    // Bug #6: Use the correct emoji and transport word based on actual transport_mode
     const mw = { DRIVING: "drive", WALKING: "walk", TRANSIT: "ride", BICYCLING: "bike ride" };
     const me = { DRIVING: "🚗", WALKING: "🚶", TRANSIT: "🚌", BICYCLING: "🚲" };
     return itinerary.map((stop, i) => {
       const m = stop.transport_mode || "DRIVING";
       const label = i === 0 ? "First up" : i === itinerary.length - 1 ? "Last stop" : "Then";
       const userEta = stop.etas?.[0]?.text ? ` (about ${stop.etas[0].text})` : "";
-      return `${me[m]} <strong>${label}</strong> — ${mw[m]?.charAt(0).toUpperCase()}${mw[m]?.slice(1)} to <strong>${stop.name}</strong>${userEta}`;
+      return `${me[m] || '🚗'} <strong>${label}</strong> — ${(mw[m] || 'drive').charAt(0).toUpperCase()}${(mw[m] || 'drive').slice(1)} to <strong>${stop.name}</strong>${userEta}`;
     });
   }
 
   function renderDetailedStops(inv, isReceived) {
     if (!inv.stops || inv.stops.length === 0) return null;
+    // Bug #6: Use correct emoji for transport mode
     const transportEmoji = { DRIVING: '🚗', WALKING: '🚶', TRANSIT: '🚌', BICYCLING: '🚲' };
+    const transportWord = { DRIVING: 'drive', WALKING: 'walk', TRANSIT: 'ride', BICYCLING: 'bike' };
     const cleanEmoji = (em) => {
         if (!em || em.includes('\uFFFD') || em.length > 5) return '📍';
         return em;
@@ -484,17 +586,18 @@ export default function App() {
       <div className="invite-stops-detail" style={{ marginTop: 12, marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 0 }}>
         {inv.stops.map((s, idx) => (
           <div key={idx}>
-            {/* Travel tag between stops */}
+            {/* Travel tag between stops - Bug #6: show correct transport emoji and word */}
             {idx > 0 && (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '6px 0' }}>
                 <div style={{ flex: 1, height: 1, background: '#EDE5DA' }} />
                 <div style={{ padding: '4px 12px', background: '#F8F3EE', borderRadius: 100, fontSize: 11, color: '#9A8A78', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4 }}>
-                  {transportEmoji[s.transport_mode] || '🚗'} {s.eta_text_user || s.eta_text_friend || 'Travel'}
+                  {transportEmoji[s.transport_mode] || '🚗'} {s.eta_text_user || s.eta_text_friend || 'Travel'} {transportWord[s.transport_mode] || 'drive'}
                 </div>
                 <div style={{ flex: 1, height: 1, background: '#EDE5DA' }} />
               </div>
             )}
             <div style={{ border: '1.5px solid #EDE5DA', borderRadius: 12, overflow: 'hidden', background: '#FAFAFA' }}>
+              {/* Bug #1: Always show MiniMap for all stops (sent and received plans) */}
               <div style={{ height: 120, background: '#E0D8CE', position: 'relative' }}>
                 <div style={{ position: 'absolute', top: 10, left: 10, background: 'rgba(255,255,255,0.95)', color: '#2C2416', padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, zIndex: 10, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>Stop {idx + 1}</div>
                 {(s.start_time || s.end_time) && (
@@ -502,42 +605,56 @@ export default function App() {
                     🕐 {s.start_time || '?'} — {s.end_time || '?'}
                   </div>
                 )}
-                <MiniMap lat={s.lat} lng={s.lng} emoji={cleanEmoji(s.emoji)} />
+                {s.lat && s.lng ? (
+                  <MiniMap lat={s.lat} lng={s.lng} emoji={cleanEmoji(s.emoji)} />
+                ) : (
+                  <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9A8A78', fontSize: 13 }}>📍 Map unavailable</div>
+                )}
               </div>
               <div style={{ padding: 12 }}>
                 <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>{cleanEmoji(s.emoji)} {s.spot_name}</div>
                 <div style={{ fontSize: 12, color: '#9A8A78', marginBottom: 12, lineHeight: 1.4 }}>📍 {s.address || 'Address unlisted'}</div>
                 
                 <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-                  <button className="itin-opt-btn" style={{ flex: 1, padding: '10px 0', fontSize: 11, fontWeight: 700, margin: 0, background: 'white', borderRadius: 8 }} onClick={() => setShowDirectionsFor({ inv, stopIdx: idx })}>🛣️ See Directions</button>
+                  <button className="itin-opt-btn" style={{ flex: 1, padding: '10px 0', fontSize: 11, fontWeight: 700, margin: 0, background: 'white', borderRadius: 8 }} onClick={() => { setDirectionRoutes([]); setDirectionsLoaded(false); setShowDirectionsFor({ inv, stopIdx: idx }); }}>🛣️ See Directions</button>
                   <button className="itin-opt-btn" style={{ flex: 1, padding: '10px 0', fontSize: 11, fontWeight: 700, margin: 0, background: 'white', borderRadius: 8 }} onClick={() => {
-                    const myLoc = inv.it_friend_id === user.id ? inv.friend_location : inv.user_location;
+                    // Bug #10: For idx > 0, use previous stop as origin, NOT user's home location
+                    let myStart;
+                    if (idx === 0) {
+                      myStart = inv.it_friend_id === user.id ? inv.friend_location : inv.user_location;
+                    } else {
+                      const prev = inv.stops[idx - 1];
+                      myStart = prev.address || `${prev.lat},${prev.lng}`;
+                    }
                     const dest = s.address || `${s.lat},${s.lng}`;
-                    window.open(`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(myLoc)}&destination=${encodeURIComponent(dest)}&travelmode=${s.transport_mode?.toLowerCase()}`, '_blank');
+                    window.open(`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(myStart)}&destination=${encodeURIComponent(dest)}&travelmode=${(s.transport_mode || 'DRIVING').toLowerCase()}`, '_blank');
                   }}>📱 Open maps</button>
                 </div>
                 
-                <button className="itin-opt-btn" style={{ width: '100%', padding: '10px 0', fontSize: 11, fontWeight: 700, margin: '0 0 16px 0', background: '#F8F3EE', color: '#6B5B4E', borderRadius: 8, border: '1.5px solid #EDE5DA' }} onClick={() => {
+                {/* Bug #3: Bigger explore button */}
+                <button className="itin-opt-btn" style={{ width: '100%', padding: '16px 0', fontSize: 14, fontWeight: 700, margin: '0 0 16px 0', background: 'linear-gradient(135deg, #F8F3EE, #FFF4EF)', color: '#D4622A', borderRadius: 12, border: '1.5px solid #FADED3', letterSpacing: 0.3, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }} onClick={() => {
                    setShowExploreModal({ lat: s.lat, lng: s.lng, name: s.spot_name });
-                }}>🔍 Explore in area</button>
+                }}><span style={{ fontSize: 20 }}>🔍</span> Explore in area</button>
                 
                 <div style={{ display: 'flex', gap: 8 }}>
                   {idx === 0 ? (
                     <>
                       <div style={{ flex: 1, background: '#FFF4EF', padding: 8, borderRadius: 8 }}>
                         <span style={{ fontSize: 10, color: '#D4622A', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, display: 'block', marginBottom: 2 }}>{isReceived ? `${inv.sender_name}'s ETA` : 'Your ETA'}</span>
-                        <span style={{ fontSize: 13, color: '#2C2416', fontWeight: 600 }}>{s.eta_text_user || 'Calculating…'}</span>
+                        {/* Bug #2: Show '—' instead of 'Calculating…' for saved plans */}
+                        <span style={{ fontSize: 13, color: '#2C2416', fontWeight: 600 }}>{s.eta_text_user || '—'}</span>
                       </div>
                       <div style={{ flex: 1, background: '#F6FBF7', padding: 8, borderRadius: 8 }}>
                         <span style={{ fontSize: 10, color: '#3D8B4B', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, display: 'block', marginBottom: 2 }}>{isReceived ? 'Your ETA' : `${inv.receiver_name}'s ETA`}</span>
-                        <span style={{ fontSize: 13, color: '#2C2416', fontWeight: 600 }}>{s.eta_text_friend || 'Calculating…'}</span>
+                        <span style={{ fontSize: 13, color: '#2C2416', fontWeight: 600 }}>{s.eta_text_friend || '—'}</span>
                       </div>
                     </>
                   ) : (
                     <div style={{ flex: 1, background: '#F8F3EE', padding: 10, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: '1px dashed #D4622A' }}>
                       <div>
                         <span style={{ fontSize: 9, color: '#6B5B4E', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, display: 'block' }}>Travel from {inv.stops[idx-1].spot_name}</span>
-                        <span style={{ fontSize: 14, color: '#2C2416', fontWeight: 700 }}>🚗 {s.eta_text_user || '—'} drive Together</span>
+                        {/* Bug #6: Show correct transport emoji and word */}
+                        <span style={{ fontSize: 14, color: '#2C2416', fontWeight: 700 }}>{transportEmoji[s.transport_mode] || '🚗'} {s.eta_text_user || '—'} {transportWord[s.transport_mode] || 'drive'} together</span>
                       </div>
                       <div style={{ fontSize: 20 }}>🏁</div>
                     </div>
@@ -849,7 +966,7 @@ export default function App() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: '#2C2416', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{stop.name}</div>
                     <div style={{ fontSize: 11, color: '#D4622A', fontWeight: 600 }}>
-                      {stop.etas?.[0]?.text ? `🕒 Typically ${stop.etas[0].text} for you` : 'Calculating route...'}
+                      {stop.etas?.[0]?.text ? `🕒 Typically ${stop.etas[0].text} for you` : ''}
                     </div>
                   </div>
                   <button className="itin-remove" style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#9A8A78', padding: 4 }} onClick={() => removeFromItinerary(stop.google_place_id)}>×</button>
@@ -1144,27 +1261,51 @@ export default function App() {
         </div>
       )}
 
-      {/* DIRECTIONS DIALOG */}
+      {/* DIRECTIONS DIALOG - Bug #8: Better multiple routes UI, fix "calculating route" text, Bug #10: correct origin */}
       {showDirectionsFor && (
-        <div className="modal-overlay" onClick={() => setShowDirectionsFor(null)} style={{ zIndex: 9999 }}>
-          <div className="modal" key={showDirectionsFor.inv.id + "_" + showDirectionsFor.stopIdx} onClick={e => e.stopPropagation()} style={{ padding: 0, width: '90%', maxWidth: 450, overflow: 'hidden' }}>
-            <div style={{ padding: 16, borderBottom: '1.5px solid #EDE5DA', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div className="modal-overlay" onClick={() => { setShowDirectionsFor(null); setDirectionRoutes([]); setDirectionsLoaded(false); setSelectedRouteIndex(0); }} style={{ zIndex: 9999 }}>
+          <div className="modal" key={showDirectionsFor.inv.id + "_" + showDirectionsFor.stopIdx} onClick={e => e.stopPropagation()} style={{ padding: 0, width: '100%', maxWidth: 450, borderRadius: '24px 24px 0 0', overflow: 'hidden', height: 'calc(100vh - 60px)', maxHeight: 950, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ padding: 16, borderBottom: '1.5px solid #EDE5DA', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
               <div style={{ fontWeight: 700, color: '#2C2416' }}>🛣️ Trip Directions</div>
-              <button onClick={() => setShowDirectionsFor(null)} style={{ background: 'none', border: 'none', fontSize: 24, padding: 4, cursor: 'pointer', color: '#9A8A78' }}>×</button>
+              <button onClick={() => { setShowDirectionsFor(null); setDirectionRoutes([]); setDirectionsLoaded(false); setSelectedRouteIndex(0); }} style={{ background: 'none', border: 'none', fontSize: 24, padding: 4, cursor: 'pointer', color: '#9A8A78' }}>×</button>
             </div>
             
-            <div style={{ height: 350, position: 'relative' }}>
+            {/* Bug #8: Show route comparison BEFORE the map when multiple routes */}
+            {directionRoutes.length > 1 && (
+              <div style={{ padding: '14px 20px', borderBottom: '1.5px solid #EDE5DA', background: 'linear-gradient(135deg, #FFF4EF, #FFF9F5)', flexShrink: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#D4622A', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 18 }}>📊</span> {directionRoutes.length} routes available — Compare times:
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {directionRoutes.map((r, i) => (
+                    <div 
+                      key={i} 
+                      onClick={() => setSelectedRouteIndex(i)}
+                      style={{ flex: 1, background: i === selectedRouteIndex ? '#2C2416' : 'white', color: i === selectedRouteIndex ? 'white' : '#2C2416', borderRadius: 12, padding: '10px 12px', border: i === selectedRouteIndex ? '2px solid #2C2416' : '2.5px solid #EDE5DA', textAlign: 'center', transition: 'all 0.2s', cursor: 'pointer' }}
+                    >
+                      <div style={{ fontSize: 10, opacity: 0.7, marginBottom: 2, textTransform: 'uppercase', letterSpacing: 0.5 }}>{i === 0 ? '⭐ Fastest' : `Route ${i + 1}`}</div>
+                      <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>{r.duration}</div>
+                      <div style={{ fontSize: 10, opacity: 0.7 }}>{r.distance}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            <div style={{ height: 300, position: 'relative', flexShrink: 0 }}>
               <DirectionsMap 
                 origin={showDirectionsFor.stopIdx === 0 
-                  ? (showDirectionsFor.inv.it_friend_id === user.id ? showDirectionsFor.inv.friend_location : showDirectionsFor.inv.user_location)
+                  ? (showDirectionsFor.inv.it_friend_id === user.id ? (showDirectionsFor.inv.friend_location || showDirectionsFor.inv.sender_location || user?.location) : (showDirectionsFor.inv.user_location || user?.location))
                   : { lat: showDirectionsFor.inv.stops[showDirectionsFor.stopIdx - 1].lat, lng: showDirectionsFor.inv.stops[showDirectionsFor.stopIdx - 1].lng }
                 } 
                 destination={{ lat: showDirectionsFor.inv.stops[showDirectionsFor.stopIdx].lat, lng: showDirectionsFor.inv.stops[showDirectionsFor.stopIdx].lng }} 
                 mode={showDirectionsFor.inv.stops[showDirectionsFor.stopIdx].transport_mode}
+                onRoutesFound={(routes) => { setDirectionRoutes(routes); setDirectionsLoaded(true); }}
+                selectedRouteIndex={selectedRouteIndex}
               />
             </div>
             
-            <div style={{ padding: 20, maxHeight: 300, overflowY: 'auto', background: '#FAFAFA' }}>
+            <div style={{ padding: 20, flex: 1, overflowY: 'auto', background: '#FAFAFA' }}>
                 <div className="modal-title" style={{ fontSize: 18, marginBottom: 4 }}>{showDirectionsFor.inv.stops[showDirectionsFor.stopIdx].spot_name}</div>
                 <div className="modal-sub" style={{ marginBottom: 4 }}>📍 {showDirectionsFor.inv.stops[showDirectionsFor.stopIdx].address}</div>
                 {showDirectionsFor.stopIdx > 0 && (
@@ -1172,25 +1313,33 @@ export default function App() {
                      🚕 Directions from previous stop ({showDirectionsFor.inv.stops[showDirectionsFor.stopIdx - 1].spot_name})
                    </div>
                 )}
+                {/* Bug #8: Show loading state only before directions load, remove "Calculating route..." once loaded */}
+                {!directionsLoaded && (
+                  <div style={{ textAlign: 'center', padding: '20px 0', color: '#9A8A78', fontSize: 13 }}>
+                    <div className="loading-bar" style={{ width: 200, margin: '0 auto 8px' }}><div className="loading-fill" /></div>
+                    Loading directions...
+                  </div>
+                )}
                 <div id="directions-panel" style={{ fontSize: 13, color: '#2C2416' }}></div>
             </div>
             
-            <div style={{ padding: 16, background: 'white' }}>
+            <div style={{ padding: 16, background: 'white', flexShrink: 0, borderTop: '1.5px solid #EDE5DA' }}>
               <button className="modal-confirm" onClick={() => {
                 const stops = showDirectionsFor.inv.stops;
                 const idx = showDirectionsFor.stopIdx;
                 const s = stops[idx];
                 
+                // Bug #10: For idx > 0, use previous stop as origin
                 let myStart;
                 if (idx === 0) {
-                   myStart = showDirectionsFor.inv.it_friend_id === user.id ? showDirectionsFor.inv.friend_location : showDirectionsFor.inv.user_location;
+                   myStart = showDirectionsFor.inv.it_friend_id === user.id ? (showDirectionsFor.inv.friend_location || showDirectionsFor.inv.sender_location || user?.location) : (showDirectionsFor.inv.user_location || user?.location);
                 } else {
                    const prev = stops[idx-1];
                    myStart = prev.address || `${prev.lat},${prev.lng}`;
                 }
 
                 const dest = s.address || `${s.lat},${s.lng}`;
-                window.open(`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(myStart)}&destination=${encodeURIComponent(dest)}&travelmode=${s.transport_mode?.toLowerCase()}`, '_blank');
+                window.open(`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(myStart)}&destination=${encodeURIComponent(dest)}&travelmode=${(s.transport_mode || 'DRIVING').toLowerCase()}`, '_blank');
               }} style={{ margin: 0 }}>
                 📱 Open in Google Maps
               </button>
@@ -1236,21 +1385,13 @@ ${FONTS}
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: 'DM Sans', sans-serif; background: #FAF6F1; color: #2C2416; }
 .app { max-width: 1000px; margin: 0 auto; min-height: 100vh; background: #FAF6F1; position: relative; overflow-x: hidden; transition: margin 0.3s, max-width 0.3s; }
-.narrow-container { max-width: 500px; margin: 0; padding: 0 40px; box-sizing: border-box; transition: padding 0.3s; }
+.narrow-container { max-width: 500px; margin: 0 auto; padding: 0 40px; box-sizing: border-box; transition: padding 0.3s; }
 
 @media (min-width: 1350px) {
-  .app { 
-    margin-left: max(450px, calc(50vw - 215px)); 
-    margin-right: auto; 
-    max-width: calc(100vw - max(450px, calc(50vw - 215px)) - 20px); 
-  }
+  .app { max-width: 1000px; margin: 0 auto; }
 }
 @media (max-width: 1350px) and (min-width: 820px) {
-  .app { 
-    margin-left: max(380px, calc(50vw - 215px)); 
-    margin-right: auto; 
-    max-width: calc(100vw - max(380px, calc(50vw - 215px)) - 20px); 
-  }
+  .app { max-width: 1000px; margin: 0 auto; }
   .narrow-container { padding: 0 20px; }
 }
 @media (max-width: 820px) {
@@ -1369,7 +1510,7 @@ body { font-family: 'DM Sans', sans-serif; background: #FAF6F1; color: #2C2416; 
 .add-btn.added { background: #6B8F71; border-color: #6B8F71; color: white; }
 
 /* Itinerary */
-.itin-bar { position: fixed; bottom: 20px; left: calc(50% - 215px - 420px - 24px); width: 420px; background: white; border: 2.5px solid #D4622A; z-index: 100; box-shadow: 0 12px 60px rgba(0,0,0,0.15); max-height: calc(100vh - 40px); border-radius: 24px; transition: all 0.3s; display: flex; flex-direction: column; overflow: hidden; }
+.itin-bar { position: fixed; bottom: 20px; left: max(20px, calc(50% - 250px - 440px)); width: 420px; background: white; border: 2.5px solid #D4622A; z-index: 100; box-shadow: 0 12px 60px rgba(0,0,0,0.15); max-height: calc(100vh - 40px); border-radius: 24px; transition: all 0.3s; display: flex; flex-direction: column; overflow: hidden; }
 .itin-content { overflow-y: auto; flex: 1; scrollbar-width: none; }
 .itin-content::-webkit-scrollbar { width: 0; display: none; }
 @media (max-width: 1350px) {
@@ -1407,14 +1548,14 @@ body { font-family: 'DM Sans', sans-serif; background: #FAF6F1; color: #2C2416; 
 .fc-remove { padding: 6px 12px; border-radius: 8px; border: 1.5px solid #EDE5DA; background: white; font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 500; cursor: pointer; color: #9A8A78; flex-shrink: 0; }
 .fc-remove:hover { border-color: #C0392B; color: #C0392B; }
 
-/* Side Panel */
-.explore-side-panel { position: fixed; top: 20px; right: calc(50% - 215px - 450px - 24px); left: auto; width: 450px; background: white; border-radius: 24px; border: 1.5px solid #EDE5DA; box-shadow: 0 12px 60px rgba(0,0,0,0.15); z-index: 1000; display: flex; flex-direction: column; overflow: hidden; height: calc(100vh - 40px); transition: all 0.3s; scrollbar-width: none; }
+/* Side Panel - Bug #3: Made bigger for better usability */
+.explore-side-panel { position: fixed; top: 20px; right: max(20px, calc(50% - 250px - 520px)); left: auto; width: 520px; background: white; border-radius: 24px; border: 1.5px solid #EDE5DA; box-shadow: 0 12px 60px rgba(0,0,0,0.15); z-index: 1000; display: flex; flex-direction: column; overflow: hidden; height: calc(100vh - 40px); transition: all 0.3s; scrollbar-width: none; }
 .explore-side-panel::-webkit-scrollbar { width: 0; display: none; }
 @media (max-width: 1350px) {
-  .explore-side-panel { right: 20px; width: 380px; }
+  .explore-side-panel { right: 20px; width: 440px; }
 }
 @media (max-width: 820px) {
-  .explore-side-panel { left: 5%; right: auto; width: 90%; top: 5%; height: 90%; }
+  .explore-side-panel { left: 2.5%; right: auto; width: 95%; top: 2.5%; height: 95%; }
 }
 
 /* Invite link */
@@ -1453,6 +1594,7 @@ body { font-family: 'DM Sans', sans-serif; background: #FAF6F1; color: #2C2416; 
 .modal-overlay { position: fixed; inset: 0; background: rgba(44,36,22,0.4); z-index: 200; display: flex; align-items: flex-end; justify-content: center; }
 .modal { background: white; width: 100%; max-width: 430px; border-radius: 24px 24px 0 0; padding: 24px 20px 36px; animation: slideUp 0.3s ease; }
 @keyframes slideUp { from{transform:translateY(100%)}to{transform:translateY(0)} }
+@keyframes scaleIn { from{opacity:0;transform:scale(0.95)}to{opacity:1;transform:scale(1)} }
 .modal-title { font-family: 'Playfair Display', serif; font-size: 20px; font-weight: 700; margin-bottom: 4px; }
 .modal-sub { font-size: 13px; color: #9A8A78; margin-bottom: 20px; }
 .modal-spots { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
