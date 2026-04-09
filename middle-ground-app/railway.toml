@@ -1,0 +1,29 @@
+[build]
+builder = "nixpacks"
+buildCommand = "npm run build"
+
+[deploy]
+startCommand = "npm start"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
+
+# Watch patterns - ignore data directories and database files to prevent unnecessary rebuilds
+[deploy.watchPatterns]
+include = ["**/*"]
+exclude = [
+  "server/data/**",
+  "/data/**",
+  "*.db",
+  "*.db-shm",
+  "*.db-wal",
+  "node_modules/**",
+  "dist/**",
+  "test_screenshots/**",
+  "*.log"
+]
+
+# Health check configuration
+[deploy.healthcheck]
+path = "/api/health"
+timeout = 100
+interval = 60
