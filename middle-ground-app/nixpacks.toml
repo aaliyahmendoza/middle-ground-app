@@ -2,10 +2,13 @@
 nixPkgs = ["nodejs_20"]
 
 [phases.install]
-cmds = ["npm install"]
+cmds = ["npm ci --prefer-offline --no-audit"]
 
 [phases.build]
 cmds = ["npm run build"]
 
 [start]
 cmd = "node server/index.js"
+
+[variables]
+NPM_CONFIG_CACHE = "/tmp/npm-cache"
