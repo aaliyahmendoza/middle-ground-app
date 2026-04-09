@@ -3,7 +3,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const db = new Database(path.join(__dirname, '..', 'middleground.db'));
+
+// Use /data/middleground.db in production, local path in development
+const dbPath = process.env.PRODUCTION === 'true'
+  ? '/data/middleground.db'
+  : path.join(__dirname, '..', 'middleground.db');
+
+const db = new Database(dbPath);
 
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');

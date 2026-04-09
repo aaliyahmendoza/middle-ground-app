@@ -15,7 +15,7 @@ import invitesRoutes from './routes/invites.js';
 import smsRoutes from './routes/sms.js';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3000;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 app.use(cors({ origin: (origin, cb) => { if (!origin || origin.startsWith('http://localhost')) cb(null, true); else cb(new Error('CORS')); }, credentials: true }));
