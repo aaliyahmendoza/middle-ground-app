@@ -29,3 +29,9 @@ middleground
 *.njsproj
 *.sln
 *.sw?
+
+# Seed scripts (development only)
+seed*.js
+seed*.cjs
+populate_test_data.cjs
+test_e2e.cjs
