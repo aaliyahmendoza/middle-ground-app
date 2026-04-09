@@ -163,6 +163,8 @@ export default function App() {
   const [is24h, setIs24h] = useState(false);
   const [timezone, setTimezone] = useState(new Intl.DateTimeFormat().resolvedOptions().timeZone);
   const [friendSearch, setFriendSearch] = useState("");
+  const [showGuestList, setShowGuestList] = useState(true);
+  const [expandedGuestGroups, setExpandedGuestGroups] = useState({});
 
   const [toast, setToast] = useState("");
   const [addFriendEmail, setAddFriendEmail] = useState("");
@@ -376,7 +378,7 @@ export default function App() {
       });
 
       for (const f of selectedFriends) {
-        await api.createInvite({ receiver_id: f.id, itinerary_id: itId, message: finalMessage, event_date: eventDate });
+        await api.createInvite({ receiver_id: f.id, itinerary_id: itId, message: finalMessage, event_date: eventDate, show_guest_list: showGuestList });
       }
 
       if (suggestingInviteId) {
@@ -389,7 +391,7 @@ export default function App() {
       setShowExploreModal(null);
       setItinerary([]); setTab("invites");
       setSuggestingInviteId(null); setDraftOriginalItinerary(null); setSuggestMessage("");
-      setEventDate(""); setStopSchedules({});
+      setEventDate(""); setStopSchedules({}); setShowGuestList(true);
       setSearched(false); setMidpoint(null); setAllCoords([]);
       api.listInvites().then(d => setInvites(d)).catch(() => {});
     } catch (err) { showToast("Failed: " + err.message); }
@@ -581,6 +583,16 @@ export default function App() {
         if (!em || em.includes('\uFFFD') || em.length > 5) return '📍';
         return em;
     };
+    // Format time from 24hr "HH:MM" to 12hr "h:mm AM/PM"
+    const formatTime = (t) => {
+      if (!t) return '?';
+      const [h, m] = t.split(':');
+      const hr = parseInt(h);
+      if (isNaN(hr)) return t;
+      const ampm = hr >= 12 ? 'PM' : 'AM';
+      const displayHr = hr % 12 || 12;
+      return `${displayHr}:${m} ${ampm}`;
+    };
 
     return (
       <div className="invite-stops-detail" style={{ marginTop: 12, marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 0 }}>
@@ -602,7 +614,7 @@ export default function App() {
                 <div style={{ position: 'absolute', top: 10, left: 10, background: 'rgba(255,255,255,0.95)', color: '#2C2416', padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, zIndex: 10, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>Stop {idx + 1}</div>
                 {(s.start_time || s.end_time) && (
                   <div style={{ position: 'absolute', top: 10, right: 10, background: 'rgba(212,98,42,0.9)', color: 'white', padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700, zIndex: 10, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
-                    🕐 {s.start_time || '?'} — {s.end_time || '?'}
+                    🕐 {formatTime(s.start_time)} — {formatTime(s.end_time)}
                   </div>
                 )}
                 {s.lat && s.lng ? (
@@ -813,6 +825,23 @@ export default function App() {
                   <span className={`invite-status ${inv.status}`}>{inv.status === "pending" ? "Pending" : inv.status === "accepted" ? "Going ✓" : inv.status === "counter" ? "Countered" : inv.status === "completed" ? "Done ✓" : "Declined"}</span>
                 </div>
                 {inv.message && <div className="invite-message">"{inv.message}"</div>}
+                {/* Show co-invitees if the sender enabled guest list visibility */}
+                {inv.co_invitees && inv.co_invitees.length > 0 && (
+                  <div style={{ marginBottom: 12, padding: '10px 12px', background: '#F8F3EE', borderRadius: 10, border: '1px solid #EDE5DA' }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: '#9A8A78', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Also invited</div>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {inv.co_invitees.map(ci => (
+                        <div key={ci.receiver_id} style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'white', borderRadius: 100, padding: '3px 10px 3px 3px', border: '1px solid #EDE5DA', fontSize: 12, fontWeight: 500 }}>
+                          <div style={{ width: 20, height: 20, borderRadius: '50%', background: ci.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 700, color: 'white' }}>{ci.avatar_letter}</div>
+                          {ci.name}
+                          <span style={{ fontSize: 9, color: ci.status === 'accepted' ? '#3D8B4B' : ci.status === 'declined' ? '#C0392B' : '#E07C2A', fontWeight: 600, marginLeft: 2 }}>
+                            {ci.status === 'accepted' ? '✓' : ci.status === 'declined' ? '✕' : '⏳'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {renderDetailedStops(inv, true)}
                 <div className="invite-actions" style={{ flexDirection: 'column', gap: 8 }}>
                   {inv.status === "pending" ? (
@@ -843,31 +872,118 @@ export default function App() {
             ))}
           </>)}
 
-          {/* SENT INVITES */}
+          {/* SENT INVITES - Grouped by itinerary_id */}
           {inviteSubTab === "sent" && (<>
             {sentList.length === 0 && <div className="empty"><div className="empty-emoji">📤</div><div className="empty-title">No invites sent</div><div className="empty-sub">Build an itinerary in Plan and send it to friends!</div></div>}
-            {sentList.map(inv => (
-              <div key={inv.id} className={`invite-card ${inv.status === "completed" ? "completed" : ""}`}>
-                <div className="invite-top">
-                  <div className="invite-avatar" style={{ background: inv.receiver_color }}>{inv.receiver_avatar}</div>
-                  <div className="invite-who">
-                    <div className="invite-name">You → {inv.receiver_name}</div>
-                    <div className="invite-date">🗓 {inv.event_date ? new Date(inv.event_date + 'T00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : "No date set"}</div>
+            {(() => {
+              // Group sent invites by itinerary_id
+              const grouped = [];
+              const seenItineraries = new Set();
+              sentList.forEach(inv => {
+                if (!seenItineraries.has(inv.itinerary_id)) {
+                  seenItineraries.add(inv.itinerary_id);
+                  const group = sentList.filter(i => i.itinerary_id === inv.itinerary_id);
+                  grouped.push(group);
+                }
+              });
+              return grouped.map(group => {
+                const primary = group[0]; // Use first invite for stops/date/message
+                const receivers = group.map(inv => ({
+                  id: inv.receiver_id,
+                  name: inv.receiver_name,
+                  avatar: inv.receiver_avatar,
+                  color: inv.receiver_color,
+                  status: inv.status,
+                  inviteId: inv.id,
+                }));
+                const allCompleted = group.every(inv => inv.status === 'completed');
+                const anyAccepted = group.some(inv => inv.status === 'accepted');
+                const allNames = receivers.map(r => r.name);
+                const displayNames = allNames.length <= 2 ? allNames.join(' & ') : `${allNames[0]} & ${allNames.length - 1} other${allNames.length - 1 > 1 ? 's' : ''}`;
+                const isExpanded = expandedGuestGroups[primary.itinerary_id];
+                const guestListHidden = !primary.show_guest_list;
+
+                return (
+                  <div key={primary.itinerary_id} className={`invite-card ${allCompleted ? "completed" : ""}`}>
+                    <div className="invite-top">
+                      {/* Stacked avatars for multiple receivers */}
+                      <div style={{ display: 'flex', position: 'relative', width: Math.min(receivers.length, 3) * 16 + 24 }}>
+                        {receivers.slice(0, 3).map((r, i) => (
+                          <div key={r.id} className="invite-avatar" style={{
+                            background: r.color,
+                            position: i > 0 ? 'absolute' : 'relative',
+                            left: i * 16,
+                            zIndex: 3 - i,
+                            border: '2px solid white',
+                            width: 36, height: 36, fontSize: 14,
+                          }}>{r.avatar}</div>
+                        ))}
+                        {receivers.length > 3 && (
+                          <div style={{
+                            position: 'absolute', left: 48, zIndex: 0,
+                            width: 36, height: 36, borderRadius: '50%',
+                            background: '#EDE5DA', display: 'flex', alignItems: 'center',
+                            justifyContent: 'center', fontSize: 10, fontWeight: 700,
+                            color: '#6B5B4E', border: '2px solid white'
+                          }}>+{receivers.length - 3}</div>
+                        )}
+                      </div>
+                      <div className="invite-who">
+                        <div className="invite-name">You → {displayNames}</div>
+                        <div className="invite-date">🗓 {primary.event_date ? new Date(primary.event_date + 'T00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : "No date set"}</div>
+                      </div>
+                      {/* Show combined status */}
+                      <span className={`invite-status ${allCompleted ? 'completed' : anyAccepted ? 'accepted' : 'pending'}`}>
+                        {allCompleted ? 'Done ✓' : anyAccepted ? 'Going' : 'pending'}
+                      </span>
+                    </div>
+
+                    {/* Expandable guest list for 3+ people */}
+                    {receivers.length >= 2 && (
+                      <div style={{ marginBottom: 12 }}>
+                        <button
+                          onClick={() => setExpandedGuestGroups(prev => ({ ...prev, [primary.itinerary_id]: !prev[primary.itinerary_id] }))}
+                          style={{
+                            width: '100%', padding: '8px 12px', borderRadius: 10,
+                            border: '1px solid #EDE5DA', background: '#F8F3EE',
+                            fontFamily: 'DM Sans', fontSize: 12, fontWeight: 600,
+                            cursor: 'pointer', color: '#6B5B4E',
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                          }}
+                        >
+                          <span>👥 {receivers.length} people invited {guestListHidden && <span style={{ fontSize: 10, color: '#9A8A78', fontWeight: 400 }}>(hidden from guests)</span>}</span>
+                          <span style={{ fontSize: 14, transition: 'transform 0.2s', transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}>▾</span>
+                        </button>
+                        {isExpanded && (
+                          <div style={{ marginTop: 8, padding: '10px 12px', background: 'white', borderRadius: 10, border: '1px solid #EDE5DA' }}>
+                            {receivers.map(r => (
+                              <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: '1px solid #F5F0EB' }}>
+                                <div style={{ width: 28, height: 28, borderRadius: '50%', background: r.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: 'white', flexShrink: 0 }}>{r.avatar}</div>
+                                <div style={{ flex: 1, fontSize: 13, fontWeight: 500, color: '#2C2416' }}>{r.name}</div>
+                                <span className={`invite-status ${r.status}`} style={{ fontSize: 10, padding: '2px 8px' }}>
+                                  {r.status === 'accepted' ? 'Going ✓' : r.status === 'declined' ? 'Declined' : r.status === 'completed' ? 'Done ✓' : 'Pending'}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {primary.message && (
+                      <div style={{ margin: '0 0 12px 0', padding: '10px 12px', background: '#F8F3EE', borderRadius: 8, borderLeft: '3px solid #D4622A', fontSize: 13, color: '#2C2416', fontStyle: 'italic' }}>
+                        "{primary.message}"
+                      </div>
+                    )}
+                    {renderDetailedStops(primary, false)}
+                    <div className="invite-actions" style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                      <button className="suggest-btn" style={{flex: 1, padding: "10px", borderRadius: 10, background: "#FFF4EF", color: "#D4622A", border: "1.5px solid #FADED3", fontFamily: "DM Sans", fontSize: 13, fontWeight: 600, cursor: "pointer"}} onClick={() => handleSuggestChanges(primary)}>✏️ Edit & Resend</button>
+                      {anyAccepted && <button onClick={() => { group.forEach(inv => { if (inv.status === 'accepted') handleInviteAction(inv.id, 'completed'); }); }} style={{flex: 1, padding: "10px", borderRadius: 10, background: "#E8F5E9", color: "#3D8B4B", border: "1.5px solid #C8E6C9", fontFamily: "DM Sans", fontSize: 13, fontWeight: 600, cursor: "pointer"}}>✅ Mark Complete</button>}
+                    </div>
                   </div>
-                  <span className={`invite-status ${inv.status}`}>{inv.status === "completed" ? "Done ✓" : inv.status}</span>
-                </div>
-                {inv.message && (
-                  <div style={{ margin: '0 0 12px 0', padding: '10px 12px', background: '#F8F3EE', borderRadius: 8, borderLeft: '3px solid #D4622A', fontSize: 13, color: '#2C2416', fontStyle: 'italic' }}>
-                    "{inv.message}"
-                  </div>
-                )}
-                {renderDetailedStops(inv, false)}
-                <div className="invite-actions" style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                  <button className="suggest-btn" style={{flex: 1, padding: "10px", borderRadius: 10, background: "#FFF4EF", color: "#D4622A", border: "1.5px solid #FADED3", fontFamily: "DM Sans", fontSize: 13, fontWeight: 600, cursor: "pointer"}} onClick={() => handleSuggestChanges(inv)}>✏️ Edit & Resend</button>
-                  {inv.status === "accepted" && <button onClick={() => handleInviteAction(inv.id, "completed")} style={{flex: 1, padding: "10px", borderRadius: 10, background: "#E8F5E9", color: "#3D8B4B", border: "1.5px solid #C8E6C9", fontFamily: "DM Sans", fontSize: 13, fontWeight: 600, cursor: "pointer"}}>✅ Mark Complete</button>}
-                </div>
-              </div>
-            ))}
+                );
+              });
+            })()}
           </>)}
         </div>)}
 
@@ -1088,6 +1204,40 @@ export default function App() {
               onChange={e => setSuggestMessage(e.target.value)}
               style={{width: '100%', height: 75, padding: 12, borderRadius: 10, border: '1.5px solid #EDE5DA', fontFamily: 'DM Sans', fontSize: 13, resize: 'none', boxSizing: 'border-box'}}
             />
+          </div>
+        )}
+
+        {/* Guest list privacy toggle - only show for multi-person invites */}
+        {selectedFriends.length > 1 && (
+          <div style={{ marginBottom: 16, padding: '12px 14px', background: '#F8F3EE', borderRadius: 12, border: '1px solid #EDE5DA' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#2C2416', marginBottom: 2 }}>
+                  {showGuestList ? '👁️ Guest list visible' : '🔒 Guest list hidden'}
+                </div>
+                <div style={{ fontSize: 11, color: '#9A8A78', lineHeight: 1.4 }}>
+                  {showGuestList 
+                    ? 'Your friends can see who else is invited' 
+                    : 'Your friends won\'t see other invitees'}
+                </div>
+              </div>
+              <button
+                onClick={() => setShowGuestList(!showGuestList)}
+                style={{
+                  width: 44, height: 24, borderRadius: 12, border: 'none',
+                  background: showGuestList ? '#D4622A' : '#D4B8A8',
+                  position: 'relative', cursor: 'pointer', transition: 'background 0.2s',
+                  flexShrink: 0,
+                }}
+              >
+                <div style={{
+                  width: 18, height: 18, borderRadius: '50%', background: 'white',
+                  position: 'absolute', top: 3,
+                  left: showGuestList ? 23 : 3,
+                  transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
+                }} />
+              </button>
+            </div>
           </div>
         )}
 

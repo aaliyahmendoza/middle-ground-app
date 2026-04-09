@@ -108,7 +108,8 @@ const migrations = [
   `ALTER TABLE users ADD COLUMN profile_picture TEXT`,
   `ALTER TABLE users ADD COLUMN username TEXT`,
   `ALTER TABLE users ADD COLUMN username_last_changed_at TEXT`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)`
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)`,
+  `ALTER TABLE invites ADD COLUMN show_guest_list INTEGER DEFAULT 1`,
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) { /* column already exists */ }

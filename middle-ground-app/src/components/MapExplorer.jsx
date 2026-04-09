@@ -266,13 +266,33 @@ export default function MapExplorer({
     });
   }, [itinerary, selectedSpot, coords, transport, isLoaded]);
 
-  function handleAdd(spot) {
+  async function handleAdd(spot) {
+    let dirs = spotDirs;
+    // If directions haven't been fetched yet (e.g. adding directly from card), fetch them now
+    if (!dirs || dirs.length === 0) {
+      try {
+        const isMultiStop = itinerary && itinerary.length > 0;
+        const effectiveOrigins = isMultiStop 
+          ? [{ lat: itinerary[itinerary.length - 1].lat, lng: itinerary[itinerary.length - 1].lng, label: "All Move Together" }]
+          : coords.map((c, i) => ({ ...c, label: peopleLabels[i] }));
+
+        const promises = effectiveOrigins.map(o =>
+          api.getDirections({ origin: { lat: o.lat, lng: o.lng }, destination: { lat: spot.lat, lng: spot.lng }, mode: transport.toLowerCase() })
+        );
+        const results = await Promise.all(promises);
+        dirs = results.map((r, i) => ({ label: effectiveOrigins[i].label, ...r }));
+      } catch (err) {
+        console.error('Auto-fetch directions failed:', err);
+        dirs = [];
+      }
+    }
     const etaData = {
       transport_mode: transport,
-      etas: spotDirs?.map(d => ({ label: d.label, text: d.duration?.text || '', seconds: d.duration?.value || 0 })) || [],
+      etas: dirs?.map(d => ({ label: d.label, text: d.duration?.text || '', seconds: d.duration?.value || 0 })) || [],
     };
     onAddToItinerary(spot, etaData);
     setSelectedSpot(null);
+    setSpotDirs(null);
   }
 
   function handleExplore(spot) {
