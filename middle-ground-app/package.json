@@ -10,7 +10,7 @@
     "dev": "vite",
     "server": "node server/index.js",
     "start": "node server/index.js",
-    "build": "vite build",
+    "build": "node -e 'try { require(\"@rolldown/binding-linux-x64-gnu\") } catch (e) { console.log(\"Missing binding, forcing install...\"); require(\"child_process\").execSync(\"npm install @rolldown/binding-linux-x64-gnu\") }' && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -41,5 +41,8 @@
   },
   "optionalDependencies": {
     "@rolldown/binding-linux-x64-gnu": "^1.0.0-rc.15"
-  }
+  },
+  "bundledDependencies": [
+    "@rolldown/binding-linux-x64-gnu"
+  ]
 }
