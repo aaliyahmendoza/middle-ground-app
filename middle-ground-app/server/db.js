@@ -1,13 +1,16 @@
 import Database from 'better-sqlite3';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Use /data/middleground.db on Railway (persistent volume), local path in dev
 const dbPath = process.env.NODE_ENV === 'production'
   ? '/data/middleground.db'
   : path.join(__dirname, '..', 'middleground.db');
+
+// Ensure the directory exists (needed if /data volume isn't mounted)
+fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
 const db = new Database(dbPath);
 
