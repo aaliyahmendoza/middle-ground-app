@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 
-export default function RegisterPage({ onSwitch, onNeedVerify }) {
+export default function RegisterPage({ onSwitch }) {
   const { register } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -13,10 +13,7 @@ export default function RegisterPage({ onSwitch, onNeedVerify }) {
     setError('');
     setLoading(true);
     try {
-      const data = await register(email, password);
-      if (data.needsVerification) {
-        onNeedVerify?.();
-      }
+      await register(email, password);
     } catch (err) {
       setError(err.message);
     } finally {

@@ -16,8 +16,6 @@ const j = (body) => JSON.stringify(body);
 export const api = {
   // Auth
   register: (b) => req('/auth/register', { method: 'POST', body: j(b) }),
-  verifyPhone: (code) => req('/auth/verify-phone', { method: 'POST', body: j({ code }) }),
-  resendCode: () => req('/auth/resend-code', { method: 'POST' }),
   login: (b) => req('/auth/login', { method: 'POST', body: j(b) }),
   logout: () => req('/auth/logout', { method: 'POST' }),
   me: () => req('/auth/me'),
@@ -48,8 +46,4 @@ export const api = {
   listInvites: () => req('/invites'),
   updateInvite: (id, b) => req(`/invites/${id}`, { method: 'PATCH', body: j(b) }),
   deleteInvite: (id) => req(`/invites/${id}`, { method: 'DELETE' }),
-
-  // SMS
-  sendItinerarySMS: (phone, itinerary_id) =>
-    req('/sms/send-itinerary', { method: 'POST', body: j({ phone, itinerary_id }) }),
 };

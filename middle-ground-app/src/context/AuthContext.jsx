@@ -31,13 +31,8 @@ export function AuthProvider({ children }) {
     setUser(null);
   };
 
-  const verifyPhone = async (code) => {
-    await api.verifyPhone(code);
-    setUser(prev => prev ? { ...prev, phone_verified: 1 } : null);
-  };
-
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, verifyPhone, setUser }}>
+    <AuthContext.Provider value={{ user, loading, login, register, logout, setUser }}>
       {children}
     </AuthContext.Provider>
   );

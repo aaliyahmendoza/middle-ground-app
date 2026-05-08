@@ -12,7 +12,6 @@ import spotsRoutes from './routes/spots.js';
 import friendsRoutes from './routes/friends.js';
 import itinerariesRoutes from './routes/itineraries.js';
 import invitesRoutes from './routes/invites.js';
-import smsRoutes from './routes/sms.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -50,7 +49,6 @@ app.use('/api/spots', spotsRoutes);
 app.use('/api/friends', friendsRoutes);
 app.use('/api/itineraries', itinerariesRoutes);
 app.use('/api/invites', invitesRoutes);
-app.use('/api/sms', smsRoutes);
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 

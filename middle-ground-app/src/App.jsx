@@ -4,7 +4,6 @@ import { useAuth } from "./context/AuthContext";
 import { api } from "./api";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
-import VerifyPhonePage from "./pages/VerifyPhonePage";
 import MapExplorer from "./components/MapExplorer";
 import Cropper from "react-easy-crop";
 import imageCompression from "browser-image-compression";
@@ -138,8 +137,7 @@ export default function App() {
   const { user, setUser, loading: authLoading, logout } = useAuth();
   const isLoaded = useGoogleMaps();
   const [authPage, setAuthPage] = useState("login");
-  const [needsVerify, setNeedsVerify] = useState(false);
-  const [tab, setTab] = useState("plan");
+const [tab, setTab] = useState("plan");
   const [planMode, setPlanMode] = useState("middle_ground");
   const [yourLocation, setYourLocation] = useState("");
   const [cityLocation, setCityLocation] = useState("");
@@ -175,9 +173,7 @@ export default function App() {
   const [addFriendEmail, setAddFriendEmail] = useState("");
   const [showAddFriend, setShowAddFriend] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
-  const [showShareModal, setShowShareModal] = useState(false);
-  const [sharePhone, setSharePhone] = useState("");
-  const [showInviteLink, setShowInviteLink] = useState(false);
+const [showInviteLink, setShowInviteLink] = useState(false);
   const [showExploreModal, setShowExploreModal] = useState(null); // {lat, lng, name}
   const [dragOverIdx, setDragOverIdx] = useState(null);
   const dragSrcIdx = useRef(null);
@@ -468,18 +464,6 @@ export default function App() {
       setEventDate(""); setStopSchedules({}); setStopTimeInputs({}); setShowGuestList(true); setDateError("");
       setSearched(false); setMidpoint(null); setAllCoords([]);
       api.listInvites().then(d => setInvites(d)).catch(() => {});
-    } catch (err) { showToast("Failed: " + err.message); }
-  }
-
-  async function sendViaSMS() {
-    if (!sharePhone || itinerary.length === 0) return;
-    try {
-      const { id: itId } = await api.createItinerary({
-        name: "Plan shared via SMS", friend_id: selectedFriends[0]?.id, user_location: yourLocation,
-        stops: itinerary.map((s, i) => ({ spot_id: s.db_id, stop_order: i, transport_mode: s.transport_mode || "DRIVING" })),
-      });
-      await api.sendItinerarySMS(sharePhone, itId);
-      showToast("📱 Itinerary sent via text!"); setShowShareModal(false); setSharePhone("");
     } catch (err) { showToast("Failed: " + err.message); }
   }
 
@@ -855,8 +839,7 @@ export default function App() {
 
   // AUTH SCREENS
   if (authLoading) return (<><style>{styles}</style><div className="app"><div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh" }}><div className="loading-bar" style={{ width: 200 }}><div className="loading-fill" /></div></div></div></>);
-  if (!user) return (<><style>{styles}</style>{authPage === "login" ? <LoginPage onSwitch={() => setAuthPage("register")} /> : <RegisterPage onSwitch={() => setAuthPage("login")} onNeedVerify={() => setNeedsVerify(true)} />}</>);
-  if (needsVerify && user.phone && !user.phone_verified) return (<><style>{styles}</style><VerifyPhonePage onSkip={() => setNeedsVerify(false)} /></>);
+  if (!user) return (<><style>{styles}</style>{authPage === "login" ? <LoginPage onSwitch={() => setAuthPage("register")} /> : <RegisterPage onSwitch={() => setAuthPage("login")} />}</>);
 
   const narrative = getRouteNarrative();
   const friendNames = selectedFriends.map(f => f.name).join(" & ") || "Friend";
@@ -1543,12 +1526,6 @@ export default function App() {
         <button className="modal-confirm" onClick={saveAndSendInvite}>{suggestingInviteId ? "📬 Reply with Suggestion →" : "📬 Send Invite →"}</button>
       </div></div>}
 
-      {/* SMS MODAL */}
-      {showShareModal && <div className="modal-overlay" onClick={() => setShowShareModal(false)}><div className="modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-title">Share via Text</div><div className="modal-sub">Send your itinerary as a text message</div>
-        <div style={{ marginBottom: 16 }}><div className="auth-field"><label>Phone Number</label><input type="tel" value={sharePhone} onChange={e => setSharePhone(e.target.value)} placeholder="+1 (555) 123-4567" style={{ padding: "10px 14px", border: "1.5px solid #EDE5DA", borderRadius: 10, fontFamily: "DM Sans", fontSize: 15, width: "100%", boxSizing: "border-box" }} /></div></div>
-        <button className="modal-confirm" onClick={sendViaSMS} disabled={!sharePhone}>📱 Send Text →</button>
-      </div></div>}
       {showSettings && (
         <div className="modal-overlay" onClick={() => setShowSettings(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>

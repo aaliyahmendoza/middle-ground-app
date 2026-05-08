@@ -4,10 +4,6 @@ import db from '../db.js';
 
 const router = Router();
 
-function generateCode() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
-
 // Register
 router.post('/register', async (req, res) => {
   try {
@@ -39,54 +35,6 @@ router.post('/register', async (req, res) => {
     console.error('Register error:', err);
     res.status(500).json({ error: 'Registration failed' });
   }
-});
-
-// Verify phone
-router.post('/verify-phone', (req, res) => {
-  const { code } = req.body;
-  const userId = req.session?.userId;
-  if (!userId) return res.status(401).json({ error: 'Not authenticated' });
-
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  if (user.verification_code !== code) return res.status(400).json({ error: 'Invalid verification code' });
-  if (new Date(user.code_expires_at) < new Date()) {
-    return res.status(400).json({ error: 'Code expired. Please request a new one.' });
-  }
-
-  db.prepare('UPDATE users SET phone_verified = 1, verification_code = NULL, code_expires_at = NULL WHERE id = ?').run(userId);
-  res.json({ success: true });
-});
-
-// Resend code
-router.post('/resend-code', async (req, res) => {
-  const userId = req.session?.userId;
-  if (!userId) return res.status(401).json({ error: 'Not authenticated' });
-
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
-  if (!user?.phone) return res.status(400).json({ error: 'No phone number on file' });
-
-  const code = generateCode();
-  const codeExpires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-  db.prepare('UPDATE users SET verification_code = ?, code_expires_at = ? WHERE id = ?').run(code, codeExpires, userId);
-
-  if (process.env.TWILIO_PHONE_NUMBER && !process.env.TWILIO_PHONE_NUMBER.includes('XXXX')) {
-    try {
-      const twilio = (await import('twilio')).default;
-      const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-      await client.messages.create({
-        body: `Your Middle Ground verification code is: ${code}`,
-        from: process.env.TWILIO_PHONE_NUMBER,
-        to: user.phone,
-      });
-    } catch (err) {
-      console.error('SMS resend failed:', err.message);
-      return res.status(500).json({ error: 'Failed to send SMS' });
-    }
-  } else {
-    console.log(`[DEV] Resent code for ${user.email}: ${code}`);
-  }
-  res.json({ success: true });
 });
 
 // Login

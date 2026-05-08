@@ -26,11 +26,10 @@ router.get('/', requireAuth, (req, res) => {
 // Add friend — status starts as 'pending'
 router.post('/', requireAuth, (req, res) => {
   try {
-    const { email, phone } = req.body;
+    const { email } = req.body;
     const userId = req.session.userId;
     let friend;
     if (email) friend = db.prepare('SELECT id, name, avatar_letter, color, location FROM users WHERE email = ?').get(email);
-    else if (phone) friend = db.prepare('SELECT id, name, avatar_letter, color, location FROM users WHERE phone = ?').get(phone);
 
     if (!friend) return res.status(404).json({ error: 'not_found' });
     if (friend.id === userId) return res.status(400).json({ error: 'Cannot add yourself' });
