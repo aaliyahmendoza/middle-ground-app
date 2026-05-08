@@ -4,8 +4,8 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Use /data/middleground.db in production, local path in development
-const dbPath = process.env.PRODUCTION === 'true'
+// Use /data/middleground.db on Railway (persistent volume), local path in dev
+const dbPath = process.env.NODE_ENV === 'production'
   ? '/data/middleground.db'
   : path.join(__dirname, '..', 'middleground.db');
 

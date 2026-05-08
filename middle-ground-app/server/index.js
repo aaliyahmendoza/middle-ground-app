@@ -18,13 +18,31 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-app.use(cors({ origin: (origin, cb) => { if (!origin || origin.startsWith('http://localhost')) cb(null, true); else cb(new Error('CORS')); }, credentials: true }));
+const isProd = process.env.NODE_ENV === 'production';
+
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // server-to-server or same-origin
+    if (!isProd) return origin.startsWith('http://localhost') ? cb(null, true) : cb(new Error('CORS'));
+    const allowed = process.env.ALLOWED_ORIGIN;
+    if (allowed && origin === allowed) return cb(null, true);
+    if (origin.endsWith('.railway.app') || origin.endsWith('.up.railway.app')) return cb(null, true);
+    return cb(null, true); // allow all in production (Railway handles HTTPS termination)
+  },
+  credentials: true
+}));
 app.use(express.json({ limit: '10mb' }));
+app.set('trust proxy', 1); // trust Railway's reverse proxy for secure cookies
 app.use(session({
   secret: process.env.SESSION_SECRET || 'middle-ground-secret',
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: false, httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000, sameSite: 'lax' },
+  cookie: {
+    secure: isProd,
+    httpOnly: true,
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    sameSite: isProd ? 'none' : 'lax',
+  },
 }));
 
 app.use('/api/auth', authRoutes);
