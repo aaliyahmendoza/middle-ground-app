@@ -983,7 +983,7 @@ export default function App() {
           </div>
 
           <div style={{ padding: '0 10px' }} className={itinerary.length > 0 ? 'map-container-with-itinerary' : ''}>
-            {searched && midpoint && <MapExplorer isLoaded={isLoaded} coords={allCoords} midpoint={midpoint} peopleLabels={peopleLabels} itinerary={itinerary} onAddToItinerary={addToItinerary} onRemoveFromItinerary={removeFromItinerary} />}
+            {searched && midpoint && <MapExplorer isLoaded={isLoaded} coords={allCoords} midpoint={midpoint} peopleLabels={peopleLabels} itinerary={itinerary} onAddToItinerary={addToItinerary} onRemoveFromItinerary={removeFromItinerary} useOriginalCoords={false} />}
             {!searched && !searchLoading && <div className="narrow-container"><div className="empty"><div className="empty-emoji">🤝</div><div className="empty-title">Ready to plan?</div><div className="empty-sub">Select friends and a location to find spots with real Google Maps ETAs.</div></div></div>}
           </div>
         </>)}
@@ -1856,12 +1856,13 @@ export default function App() {
                <button onClick={() => setShowExploreModal(null)} style={{ background: 'white', border: '1.5px solid #EDE5DA', borderRadius: '50%', width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#9A8A78', fontSize: 24 }}>×</button>
             </div>
             <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
-               <MapExplorer 
-                 isLoaded={isLoaded} 
-                 coords={allCoords} 
-                 midpoint={{ lat: showExploreModal.lat, lng: showExploreModal.lng }} 
-                 peopleLabels={peopleLabels} 
-                 itinerary={itinerary} 
+               <MapExplorer
+                 isLoaded={isLoaded}
+                 coords={allCoords}
+                 midpoint={{ lat: showExploreModal.lat, lng: showExploreModal.lng }}
+                 peopleLabels={peopleLabels}
+                 itinerary={itinerary}
+                 useOriginalCoords={true}
                  onAddToItinerary={(spot, etaData) => {
                    addToItinerary(spot, etaData);
                    if (suggestingInviteId) {

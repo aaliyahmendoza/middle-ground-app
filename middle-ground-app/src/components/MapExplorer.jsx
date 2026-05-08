@@ -28,7 +28,7 @@ function emojiFor(types) {
 
 export default function MapExplorer({
   isLoaded, coords, midpoint, peopleLabels, itinerary,
-  onAddToItinerary, onRemoveFromItinerary,
+  onAddToItinerary, onRemoveFromItinerary, useOriginalCoords = false,
 }) {
   const [spots, setSpots] = useState([]);
   const [selectedSpot, setSelectedSpot] = useState(null);
@@ -199,7 +199,10 @@ export default function MapExplorer({
     try {
       const directionsService = new window.google.maps.DirectionsService();
       
-      const effectiveOrigins = coords.map((c, i) => ({ ...c, label: peopleLabels[i] }));
+      const isMultiStop = !useOriginalCoords && itinerary && itinerary.length > 0;
+      const effectiveOrigins = isMultiStop
+        ? [{ lat: itinerary[itinerary.length - 1].lat, lng: itinerary[itinerary.length - 1].lng, label: 'From last stop' }]
+        : coords.map((c, i) => ({ ...c, label: peopleLabels[i] }));
 
       const promises = effectiveOrigins.map(o =>
         api.getDirections({ origin: { lat: o.lat, lng: o.lng }, destination: { lat: spot.lat, lng: spot.lng }, mode: transport.toLowerCase() })
@@ -267,7 +270,10 @@ export default function MapExplorer({
     // If directions haven't been fetched yet (e.g. adding directly from card), fetch them now
     if (!dirs || dirs.length === 0) {
       try {
-        const effectiveOrigins = coords.map((c, i) => ({ ...c, label: peopleLabels[i] }));
+        const isMultiStop = !useOriginalCoords && itinerary && itinerary.length > 0;
+        const effectiveOrigins = isMultiStop
+          ? [{ lat: itinerary[itinerary.length - 1].lat, lng: itinerary[itinerary.length - 1].lng, label: 'From last stop' }]
+          : coords.map((c, i) => ({ ...c, label: peopleLabels[i] }));
 
         const promises = effectiveOrigins.map(o =>
           api.getDirections({ origin: { lat: o.lat, lng: o.lng }, destination: { lat: spot.lat, lng: spot.lng }, mode: transport.toLowerCase() })
