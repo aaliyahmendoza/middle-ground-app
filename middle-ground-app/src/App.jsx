@@ -159,8 +159,6 @@ export default function App() {
   const [suggestMessage, setSuggestMessage] = useState("");
   const [inviteSubTab, setInviteSubTab] = useState("received");
   const [selectedInviteId, setSelectedInviteId] = useState(null);
-  const [selectMode, setSelectMode] = useState(false);
-  const [selectedForDelete, setSelectedForDelete] = useState(new Set());
   const [stopStep, setStopStep] = useState(0);
   const [showAllStops, setShowAllStops] = useState(false);
   const [stopTimeInputs, setStopTimeInputs] = useState({});
@@ -537,33 +535,6 @@ export default function App() {
     } catch { showToast("Failed"); }
   }
 
-  async function handleDeleteInvite(id) {
-    try {
-      await api.deleteInvite(id);
-      setInvites(prev => ({
-        received: (prev.received || []).filter(inv => inv.id !== id),
-        sent: (prev.sent || []).filter(inv => inv.id !== id)
-      }));
-      setSelectedInviteId(null);
-      showToast("Invite deleted");
-    } catch { showToast("Failed to delete"); }
-  }
-
-  async function handleMassDelete() {
-    const ids = [...selectedForDelete];
-    if (!ids.length) return;
-    try {
-      await Promise.all(ids.map(id => api.deleteInvite(id)));
-      setInvites(prev => ({
-        received: (prev.received || []).filter(inv => !ids.includes(inv.id)),
-        sent: (prev.sent || []).filter(inv => !ids.includes(inv.id))
-      }));
-      setSelectedForDelete(new Set());
-      setSelectMode(false);
-      setSelectedInviteId(null);
-      showToast(`Deleted ${ids.length} invite${ids.length > 1 ? 's' : ''}`);
-    } catch { showToast("Failed to delete some invites"); }
-  }
 
   async function handleSuggestChanges(inv, { silent = false, keepTab = false } = {}) {
     const isWeFriendInOriginal = inv.it_friend_id === user.id;
@@ -1014,24 +985,8 @@ export default function App() {
               {/* ── LEFT PANEL: summary list ── */}
               <div style={{ width: 360, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1.5px solid #EDE5DA', paddingRight: 16 }}>
                 <div style={{ paddingTop: 20, paddingBottom: 12 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <div style={{ marginBottom: 12 }}>
                     <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 700, color: '#2C2416' }}>Invites</div>
-                    {selectMode ? (
-                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        {selectedForDelete.size > 0 && (
-                          <button onClick={handleMassDelete} style={{ padding: '6px 12px', borderRadius: 8, background: '#C0392B', color: 'white', border: 'none', fontFamily: 'DM Sans', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                            🗑 Delete ({selectedForDelete.size})
-                          </button>
-                        )}
-                        <button onClick={() => { setSelectMode(false); setSelectedForDelete(new Set()); }} style={{ padding: '6px 12px', borderRadius: 8, background: '#F0E8DD', color: '#6B5B4E', border: 'none', fontFamily: 'DM Sans', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <button onClick={() => setSelectMode(true)} style={{ padding: '6px 12px', borderRadius: 8, background: '#F0E8DD', color: '#6B5B4E', border: 'none', fontFamily: 'DM Sans', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                        Select
-                      </button>
-                    )}
                   </div>
                   {/* Tab toggle */}
                   <div style={{ display: 'flex', gap: 0, background: '#F0E8DD', borderRadius: 10, padding: 3 }}>
@@ -1064,29 +1019,17 @@ export default function App() {
                       const stopCount = inv.stops?.length || 0;
                       const isSelected = selectedInviteId === inv.id;
                       const isPending = inv.status === 'pending';
-                      const isChecked = selectedForDelete.has(inv.id);
                       return (
-                        <div key={inv.id} onClick={() => {
-                          if (selectMode) {
-                            setSelectedForDelete(prev => { const n = new Set(prev); isChecked ? n.delete(inv.id) : n.add(inv.id); return n; });
-                          } else {
-                            setSelectedInviteId(inv.id);
-                          }
-                        }} style={{
+                        <div key={inv.id} onClick={() => setSelectedInviteId(inv.id)} style={{
                           padding: '14px 12px', borderRadius: 12, marginBottom: 6, cursor: 'pointer', transition: 'all 0.15s',
-                          background: isChecked ? '#FDECEA' : isSelected ? '#FFF4EF' : 'white',
-                          border: isChecked ? '1.5px solid #C0392B' : isSelected ? '1.5px solid #D4622A' : '1.5px solid #EDE5DA',
+                          background: isSelected ? '#FFF4EF' : 'white',
+                          border: isSelected ? '1.5px solid #D4622A' : '1.5px solid #EDE5DA',
                           boxShadow: isSelected ? '0 2px 12px rgba(212,98,42,0.12)' : '0 1px 4px rgba(0,0,0,0.04)',
                         }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            {selectMode && (
-                              <div style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${isChecked ? '#C0392B' : '#D4B8A8'}`, background: isChecked ? '#C0392B' : 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: 'white', fontSize: 13 }}>
-                                {isChecked && '✓'}
-                              </div>
-                            )}
                             <div style={{ width: 40, height: 40, borderRadius: '50%', background: inv.sender_color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 700, color: 'white', flexShrink: 0, position: 'relative' }}>
                               {inv.sender_avatar}
-                              {isPending && !selectMode && <div style={{ position: 'absolute', top: -2, right: -2, width: 10, height: 10, borderRadius: '50%', background: '#D4622A', border: '2px solid white' }} />}
+                              {isPending && <div style={{ position: 'absolute', top: -2, right: -2, width: 10, height: 10, borderRadius: '50%', background: '#D4622A', border: '2px solid white' }} />}
                             </div>
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ fontSize: 14, fontWeight: isPending ? 700 : 600, color: '#2C2416', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -1133,26 +1076,14 @@ export default function App() {
                       const relDate = formatRelativeDate(primary.event_date);
                       const isSelected = selectedInviteId === primary.itinerary_id;
                       const groupIds = group.map(i => i.id);
-                      const isChecked = groupIds.some(id => selectedForDelete.has(id));
                       return (
-                        <div key={primary.itinerary_id} onClick={() => {
-                          if (selectMode) {
-                            setSelectedForDelete(prev => { const n = new Set(prev); isChecked ? groupIds.forEach(id => n.delete(id)) : groupIds.forEach(id => n.add(id)); return n; });
-                          } else {
-                            setSelectedInviteId(primary.itinerary_id);
-                          }
-                        }} style={{
+                        <div key={primary.itinerary_id} onClick={() => setSelectedInviteId(primary.itinerary_id)} style={{
                           padding: '14px 12px', borderRadius: 12, marginBottom: 6, cursor: 'pointer', transition: 'all 0.15s',
-                          background: isChecked ? '#FDECEA' : isSelected ? '#FFF4EF' : 'white',
-                          border: isChecked ? '1.5px solid #C0392B' : isSelected ? '1.5px solid #D4622A' : '1.5px solid #EDE5DA',
+                          background: isSelected ? '#FFF4EF' : 'white',
+                          border: isSelected ? '1.5px solid #D4622A' : '1.5px solid #EDE5DA',
                           boxShadow: isSelected ? '0 2px 12px rgba(212,98,42,0.12)' : '0 1px 4px rgba(0,0,0,0.04)',
                         }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            {selectMode && (
-                              <div style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${isChecked ? '#C0392B' : '#D4B8A8'}`, background: isChecked ? '#C0392B' : 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: 'white', fontSize: 13 }}>
-                                {isChecked && '✓'}
-                              </div>
-                            )}
                             <div style={{ display: 'flex', position: 'relative', width: Math.min(receivers.length, 3) * 14 + 26, height: 40, flexShrink: 0 }}>
                               {receivers.slice(0, 3).map((r, i) => (
                                 <div key={r.id} style={{ width: 40, height: 40, borderRadius: '50%', background: r.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 700, color: 'white', border: '2px solid white', position: i === 0 ? 'relative' : 'absolute', left: i * 14, zIndex: 3-i }}>{r.avatar}</div>
@@ -1264,7 +1195,6 @@ export default function App() {
                             )}
                           </>
                         )}
-                        <button onClick={() => handleDeleteInvite(inv.id)} style={{ padding: '8px', borderRadius: 10, background: 'transparent', color: '#C0392B', border: '1.5px solid #F5C4BA', fontFamily: 'DM Sans', fontSize: 13, fontWeight: 600, cursor: 'pointer', width: '100%' }}>🗑 Delete Invite</button>
                       </div>
                     </div>
                   );
@@ -1336,7 +1266,6 @@ export default function App() {
                           <button className="suggest-btn" style={{ flex: 1, padding: '12px', borderRadius: 10, background: '#FFF4EF', color: '#D4622A', border: '1.5px solid #FADED3', fontFamily: 'DM Sans', fontSize: 14, fontWeight: 600, cursor: 'pointer' }} onClick={() => handleSuggestChanges(primary)}>✏️ Edit & Resend</button>
                           {anyAccepted && <button onClick={() => { group.forEach(inv => { if (inv.status === 'accepted') handleInviteAction(inv.id, 'completed'); }); }} style={{ flex: 1, padding: '12px', borderRadius: 10, background: '#E8F5E9', color: '#3D8B4B', border: '1.5px solid #C8E6C9', fontFamily: 'DM Sans', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>✅ Mark Complete</button>}
                         </div>
-                        <button onClick={() => { group.forEach(inv => handleDeleteInvite(inv.id)); }} style={{ padding: '8px', borderRadius: 10, background: 'transparent', color: '#C0392B', border: '1.5px solid #F5C4BA', fontFamily: 'DM Sans', fontSize: 13, fontWeight: 600, cursor: 'pointer', width: '100%' }}>🗑 Delete Invite</button>
                       </div>
                     </div>
                   );
