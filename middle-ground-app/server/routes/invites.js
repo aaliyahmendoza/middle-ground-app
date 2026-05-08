@@ -78,4 +78,20 @@ router.patch('/:id', requireAuth, (req, res) => {
   }
 });
 
+router.delete('/:id', requireAuth, (req, res) => {
+  try {
+    const userId = Number(req.session.userId);
+    const invite = db.prepare('SELECT * FROM invites WHERE id = ?').get(req.params.id);
+    if (!invite) return res.status(404).json({ error: 'Invite not found' });
+    if (invite.sender_id !== userId && invite.receiver_id !== userId) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    db.prepare('DELETE FROM invites WHERE id = ?').run(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete invite error:', err);
+    res.status(500).json({ error: 'Failed to delete invite' });
+  }
+});
+
 export default router;

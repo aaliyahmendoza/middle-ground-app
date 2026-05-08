@@ -112,6 +112,10 @@ router.get('/nearby', requireAuth, async (req, res) => {
 
     const textQuery = keyword || type || 'popular places and points of interest';
 
+    const centerLat = parseFloat(lat);
+    const centerLng = parseFloat(lng);
+    const searchRadius = parseFloat(radius);
+
     const r = await fetch('https://places.googleapis.com/v1/places:searchText', {
       method: 'POST',
       headers: {
@@ -121,19 +125,31 @@ router.get('/nearby', requireAuth, async (req, res) => {
       },
       body: JSON.stringify({
         textQuery,
-        locationBias: {
+        locationRestriction: {
           circle: {
-            center: { latitude: parseFloat(lat), longitude: parseFloat(lng) },
-            radius: parseFloat(radius)
+            center: { latitude: centerLat, longitude: centerLng },
+            radius: searchRadius
           }
         },
         maxResultCount: 20
       })
     });
-    
+
     const d = await r.json();
 
-    const spots = (d.places || []).map(p => {
+    // Haversine distance in meters between two lat/lng points
+    function haversineMeters(lat1, lng1, lat2, lng2) {
+      const R = 6371000;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLng = (lng2 - lng1) * Math.PI / 180;
+      const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLng/2)**2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+
+    const spots = (d.places || []).filter(p => {
+      if (!p.location) return false;
+      return haversineMeters(centerLat, centerLng, p.location.latitude, p.location.longitude) <= searchRadius;
+    }).map(p => {
       let pl = 0;
       if (p.priceLevel === 'PRICE_LEVEL_INEXPENSIVE') pl = 1;
       else if (p.priceLevel === 'PRICE_LEVEL_MODERATE') pl = 2;

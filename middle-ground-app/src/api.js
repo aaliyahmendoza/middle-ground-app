@@ -47,6 +47,7 @@ export const api = {
   createInvite: (b) => req('/invites', { method: 'POST', body: j(b) }),
   listInvites: () => req('/invites'),
   updateInvite: (id, b) => req(`/invites/${id}`, { method: 'PATCH', body: j(b) }),
+  deleteInvite: (id) => req(`/invites/${id}`, { method: 'DELETE' }),
 
   // SMS
   sendItinerarySMS: (phone, itinerary_id) =>

@@ -199,11 +199,7 @@ export default function MapExplorer({
     try {
       const directionsService = new window.google.maps.DirectionsService();
       
-      // If we already have stops, everyone is traveling together from the LAST stop
-      const isMultiStop = itinerary && itinerary.length > 0;
-      const effectiveOrigins = isMultiStop 
-        ? [{ lat: itinerary[itinerary.length - 1].lat, lng: itinerary[itinerary.length - 1].lng, label: "All Move Together" }]
-        : coords.map((c, i) => ({ ...c, label: peopleLabels[i] }));
+      const effectiveOrigins = coords.map((c, i) => ({ ...c, label: peopleLabels[i] }));
 
       const promises = effectiveOrigins.map(o =>
         api.getDirections({ origin: { lat: o.lat, lng: o.lng }, destination: { lat: spot.lat, lng: spot.lng }, mode: transport.toLowerCase() })
@@ -271,10 +267,7 @@ export default function MapExplorer({
     // If directions haven't been fetched yet (e.g. adding directly from card), fetch them now
     if (!dirs || dirs.length === 0) {
       try {
-        const isMultiStop = itinerary && itinerary.length > 0;
-        const effectiveOrigins = isMultiStop 
-          ? [{ lat: itinerary[itinerary.length - 1].lat, lng: itinerary[itinerary.length - 1].lng, label: "All Move Together" }]
-          : coords.map((c, i) => ({ ...c, label: peopleLabels[i] }));
+        const effectiveOrigins = coords.map((c, i) => ({ ...c, label: peopleLabels[i] }));
 
         const promises = effectiveOrigins.map(o =>
           api.getDirections({ origin: { lat: o.lat, lng: o.lng }, destination: { lat: spot.lat, lng: spot.lng }, mode: transport.toLowerCase() })

@@ -3,10 +3,8 @@ import { useAuth } from '../context/AuthContext';
 
 export default function RegisterPage({ onSwitch, onNeedVerify }) {
   const { register } = useAuth();
-  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [phone, setPhone] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -15,8 +13,8 @@ export default function RegisterPage({ onSwitch, onNeedVerify }) {
     setError('');
     setLoading(true);
     try {
-      const data = await register(name, email, password, phone || undefined);
-      if (data.needsVerification && phone) {
+      const data = await register(email, password);
+      if (data.needsVerification) {
         onNeedVerify?.();
       }
     } catch (err) {
@@ -39,11 +37,6 @@ export default function RegisterPage({ onSwitch, onNeedVerify }) {
           {error && <div className="auth-error">{error}</div>}
 
           <div className="auth-field">
-            <label>Name</label>
-            <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="Your name" required />
-          </div>
-
-          <div className="auth-field">
             <label>Email</label>
             <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" required />
           </div>
@@ -53,13 +46,8 @@ export default function RegisterPage({ onSwitch, onNeedVerify }) {
             <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Min 6 characters" required minLength={6} />
           </div>
 
-          <div className="auth-field">
-            <label>Phone Number <span className="optional">(optional — for SMS verification & sharing)</span></label>
-            <input type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="+1 (555) 123-4567" />
-          </div>
-
           <button type="submit" className="auth-btn" disabled={loading}>
-            {loading ? 'Creating account…' : '🚀 Create Account'}
+            {loading ? 'Creating account…' : 'Create Account'}
           </button>
         </form>
 

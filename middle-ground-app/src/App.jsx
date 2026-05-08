@@ -158,6 +158,13 @@ export default function App() {
   const [suggestingInviteId, setSuggestingInviteId] = useState(null);
   const [suggestMessage, setSuggestMessage] = useState("");
   const [inviteSubTab, setInviteSubTab] = useState("received");
+  const [selectedInviteId, setSelectedInviteId] = useState(null);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedForDelete, setSelectedForDelete] = useState(new Set());
+  const [stopStep, setStopStep] = useState(0);
+  const [showAllStops, setShowAllStops] = useState(false);
+  const [stopTimeInputs, setStopTimeInputs] = useState({});
+  const [dateError, setDateError] = useState("");
   const [eventDate, setEventDate] = useState("");
   const [stopSchedules, setStopSchedules] = useState({});
   const [is24h, setIs24h] = useState(false);
@@ -174,6 +181,9 @@ export default function App() {
   const [sharePhone, setSharePhone] = useState("");
   const [showInviteLink, setShowInviteLink] = useState(false);
   const [showExploreModal, setShowExploreModal] = useState(null); // {lat, lng, name}
+  const [dragOverIdx, setDragOverIdx] = useState(null);
+  const dragSrcIdx = useRef(null);
+  const exploreBeforeInvite = useRef(null);
   const [directionRoutes, setDirectionRoutes] = useState([]);
   const [directionsLoaded, setDirectionsLoaded] = useState(false);
   const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
@@ -182,7 +192,7 @@ export default function App() {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showRemoveFriendConfirm, setShowRemoveFriendConfirm] = useState(null);
   const [showDirectionsFor, setShowDirectionsFor] = useState(null);
-  const [settingsData, setSettingsData] = useState({ name: "", email: "", location: "", profile_picture: "", username: "" });
+  const [settingsData, setSettingsData] = useState({ name: "", email: "", location: "", profile_picture: "" });
   const [settingsLoading, setSettingsLoading] = useState(false);
 
   // Cropper State
@@ -192,7 +202,7 @@ export default function App() {
   const [croppedAreaPixels, setCroppedAreaPixels] = useState(null);
 
   function openSettings() {
-    setSettingsData({ name: user.name || "", email: user.email || "", location: user.location || "", profile_picture: user.profile_picture || "", username: user.username || "" });
+    setSettingsData({ name: user.name || "", email: user.email || "", location: user.location || "", profile_picture: user.profile_picture || "" });
     setShowSettings(true);
   }
 
@@ -252,6 +262,19 @@ export default function App() {
     }
   }, [user]);
 
+  useEffect(() => { setStopStep(0); setShowAllStops(false); }, [selectedInviteId]);
+
+  // Close explore panel + suggestion state when user navigates away
+  useEffect(() => {
+    setShowExploreModal(null);
+    setShowInviteModal(false);
+    if (suggestingInviteId) {
+      setItinerary([]);
+      setSuggestingInviteId(null);
+      setDraftOriginalItinerary(null);
+    }
+  }, [tab, inviteSubTab, selectedInviteId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const showToast = (m) => { setToast(m); setTimeout(() => setToast(""), 3000); };
   // Ensure unique friends in acceptedFriends
   const safeFriends = Array.isArray(friends) ? friends : [];
@@ -284,6 +307,8 @@ export default function App() {
       
       const locs = [];
       if (planMode === "city") {
+        // Always include the user's profile location first so ETAs are calculated from their home
+        if (yourLocation) locs.push({ label: "You", address: yourLocation });
         locs.push({ label: "City", address: cityLocation });
       } else {
         locs.push({ label: "You", address: yourLocation });
@@ -292,13 +317,19 @@ export default function App() {
           if (addr) locs.push({ label: f.name, address: addr });
         });
       }
-      
+
       if (locs.length === 0) throw new Error("No locations provided");
 
       const data = await api.searchMidpoint(locs);
       setAllCoords(data.coords.map(c => ({ lat: c.lat, lng: c.lng })));
       setPeopleLabels(data.coords.map(c => c.label));
-      setMidpoint(data.midpoint);
+      // In city mode, always center the map on the city (last coord), not the midpoint between home + city
+      if (planMode === "city") {
+        const cityCoord = data.coords[data.coords.length - 1];
+        setMidpoint({ lat: cityCoord.lat, lng: cityCoord.lng });
+      } else {
+        setMidpoint(data.midpoint);
+      }
       setSearched(true);
     } catch (err) { showToast("Could not find locations: " + err.message); }
     finally { setSearchLoading(false); }
@@ -313,7 +344,14 @@ export default function App() {
     } catch { showToast("Failed to add spot"); }
   }
 
-  function removeFromItinerary(pid) { setItinerary(prev => prev.filter(s => s.google_place_id !== pid)); }
+  function removeFromItinerary(pid) {
+    setItinerary(prev => {
+      const next = prev.filter(s => s.google_place_id !== pid);
+      const removedIdx = prev.findIndex(s => s.google_place_id === pid);
+      if (removedIdx >= 0 && next.length > 0) setTimeout(() => recalculateStopETAs(next, removedIdx), 0);
+      return next;
+    });
+  }
 
   async function updateStopTransport(idx, mode) {
     const stop = itinerary[idx];
@@ -346,8 +384,46 @@ export default function App() {
     }
   }
 
+  async function recalculateStopETAs(stops, fromIdx = 0) {
+    const updated = [...stops];
+    const userCoord = allCoords[0] ? { lat: allCoords[0].lat, lng: allCoords[0].lng } : null;
+    for (let i = fromIdx; i < updated.length; i++) {
+      const stop = updated[i];
+      const origin = i === 0
+        ? (userCoord || yourLocation || user?.location || null)
+        : { lat: updated[i - 1].lat, lng: updated[i - 1].lng };
+      if (!origin) continue;
+      try {
+        const dir = await api.getDirections({
+          origin,
+          destination: { lat: stop.lat, lng: stop.lng },
+          mode: (stop.transport_mode || 'DRIVING').toLowerCase(),
+        });
+        updated[i] = {
+          ...updated[i],
+          etas: [
+            { label: 'You', text: dir.duration?.text || '', seconds: dir.duration?.value || 0 },
+            ...(stop.etas?.slice(1) || []),
+          ],
+        };
+      } catch { /* keep existing ETA on failure */ }
+    }
+    setItinerary(updated);
+  }
+
+  function reorderItinerary(fromIdx, toIdx) {
+    if (fromIdx === toIdx) return;
+    const next = [...itinerary];
+    const [moved] = next.splice(fromIdx, 1);
+    next.splice(toIdx, 0, moved);
+    setItinerary(next);
+    recalculateStopETAs(next, Math.min(fromIdx, toIdx));
+  }
+
   async function saveAndSendInvite() {
     if (selectedFriends.length === 0 || itinerary.length === 0) return;
+    if (!eventDate) { setDateError("Please pick a date before sending."); return; }
+    setDateError("");
     try {
       let finalMessage = "Check out this itinerary!";
       if (suggestingInviteId) {
@@ -358,11 +434,11 @@ export default function App() {
            const added = newSpots.filter(n => !oldSpots.includes(n));
            const removed = oldSpots.filter(o => !newSpots.includes(o));
            if (added.length > 0 && removed.length > 0) {
-              finalMessage = `I made a suggestion: Instead of ${removed[0]}, how about ${added[0]}?`;
+              finalMessage = `I swapped ${removed[0]} for ${added[0]} in our plan!`;
            } else if (added.length > 0) {
-              finalMessage = `I made a suggestion: Let's also go to ${added[0]}!`;
+              finalMessage = `I added ${added[0]} to our plan!`;
            } else if (removed.length > 0) {
-              finalMessage = `I made a suggestion: Let's skip ${removed[0]}.`;
+              finalMessage = `I removed ${removed[0]} from our plan.`;
            } else {
               finalMessage = `I adjusted our plan a bit!`;
            }
@@ -391,7 +467,7 @@ export default function App() {
       setShowExploreModal(null);
       setItinerary([]); setTab("invites");
       setSuggestingInviteId(null); setDraftOriginalItinerary(null); setSuggestMessage("");
-      setEventDate(""); setStopSchedules({}); setShowGuestList(true);
+      setEventDate(""); setStopSchedules({}); setStopTimeInputs({}); setShowGuestList(true); setDateError("");
       setSearched(false); setMidpoint(null); setAllCoords([]);
       api.listInvites().then(d => setInvites(d)).catch(() => {});
     } catch (err) { showToast("Failed: " + err.message); }
@@ -461,7 +537,35 @@ export default function App() {
     } catch { showToast("Failed"); }
   }
 
-  async function handleSuggestChanges(inv) {
+  async function handleDeleteInvite(id) {
+    try {
+      await api.deleteInvite(id);
+      setInvites(prev => ({
+        received: (prev.received || []).filter(inv => inv.id !== id),
+        sent: (prev.sent || []).filter(inv => inv.id !== id)
+      }));
+      setSelectedInviteId(null);
+      showToast("Invite deleted");
+    } catch { showToast("Failed to delete"); }
+  }
+
+  async function handleMassDelete() {
+    const ids = [...selectedForDelete];
+    if (!ids.length) return;
+    try {
+      await Promise.all(ids.map(id => api.deleteInvite(id)));
+      setInvites(prev => ({
+        received: (prev.received || []).filter(inv => !ids.includes(inv.id)),
+        sent: (prev.sent || []).filter(inv => !ids.includes(inv.id))
+      }));
+      setSelectedForDelete(new Set());
+      setSelectMode(false);
+      setSelectedInviteId(null);
+      showToast(`Deleted ${ids.length} invite${ids.length > 1 ? 's' : ''}`);
+    } catch { showToast("Failed to delete some invites"); }
+  }
+
+  async function handleSuggestChanges(inv, { silent = false, keepTab = false } = {}) {
     const isWeFriendInOriginal = inv.it_friend_id === user.id;
     
     // Bug #9: Use PROFILE location as default, not just the invite's stored location.
@@ -516,8 +620,8 @@ export default function App() {
       scheds[idx] = { start: s.start_time || '', end: s.end_time || '' };
     });
     setStopSchedules(scheds);
-    setTab("plan");
-    showToast("Loaded original plan for editing");
+    if (!keepTab) setTab("plan");
+    if (!silent) showToast("Loaded original plan for editing");
     
     // Bug #4 & #7: Automatically recalculate midpoint & directions
     try {
@@ -562,6 +666,64 @@ export default function App() {
     }
   }
 
+  function formatRelativeDate(dateStr) {
+    if (!dateStr) return null;
+    const date = new Date(dateStr + 'T00:00');
+    if (isNaN(date.getTime())) return null;
+    const today = new Date(); today.setHours(0,0,0,0);
+    const target = new Date(date); target.setHours(0,0,0,0);
+    const diff = Math.round((target - today) / 86400000);
+    if (diff === 0) return 'Today';
+    if (diff === 1) return 'Tomorrow';
+    if (diff === -1) return 'Yesterday';
+    if (diff > 1 && diff <= 6) return `This ${date.toLocaleDateString('en-US', { weekday: 'long' })}`;
+    if (diff >= 7 && diff <= 13) return `Next ${date.toLocaleDateString('en-US', { weekday: 'long' })}, ${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+    if (diff < 0) return date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    return date.toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+  }
+
+  function parseTimeRange(text) {
+    if (!text.trim()) return { start: '', end: '' };
+    const t = text.toLowerCase().replace(/\s+/g, '');
+    const seps = ['–', '-', 'to', 'until'];
+    let parts = null;
+    for (const sep of seps) {
+      const idx = t.lastIndexOf(sep);
+      if (idx > 0) { parts = [t.slice(0, idx), t.slice(idx + sep.length)]; break; }
+    }
+    if (!parts) parts = [t, ''];
+    const parseOne = (s) => {
+      const m = s.match(/^(\d{1,2})(?::(\d{2}))?(am|pm)?$/);
+      if (!m) return '';
+      let h = parseInt(m[1]); const min = parseInt(m[2] || '0'); const ap = m[3];
+      if (ap === 'pm' && h !== 12) h += 12;
+      if (ap === 'am' && h === 12) h = 0;
+      if (h > 23 || min > 59) return '';
+      return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
+    };
+    return { start: parseOne(parts[0]), end: parseOne(parts[1]) };
+  }
+
+  function fmtTime(t) {
+    if (!t) return '';
+    const [h, m] = t.split(':'); const hr = parseInt(h);
+    return `${hr % 12 || 12}:${m}${hr >= 12 ? 'pm' : 'am'}`;
+  }
+
+  function renderEventDate(dateStr) {
+    if (!dateStr) return null;
+    const date = new Date(dateStr + 'T00:00');
+    if (isNaN(date.getTime())) return null;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const isPast = date < today;
+    const rel = formatRelativeDate(dateStr);
+    const full = date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    if (isPast) {
+      return <span style={{ color: '#C0392B', fontWeight: 600 }}> · {full} <span style={{ fontWeight: 400, fontStyle: 'italic' }}>(date passed)</span></span>;
+    }
+    return <span style={{ color: '#D4622A', fontWeight: 600 }}> · {rel} <span style={{ fontWeight: 400, color: '#9A8A78' }}>({full})</span></span>;
+  }
+
   function getRouteNarrative() {
     // Bug #6: Use the correct emoji and transport word based on actual transport_mode
     const mw = { DRIVING: "drive", WALKING: "walk", TRANSIT: "ride", BICYCLING: "bike ride" };
@@ -576,106 +738,146 @@ export default function App() {
 
   function renderDetailedStops(inv, isReceived) {
     if (!inv.stops || inv.stops.length === 0) return null;
-    // Bug #6: Use correct emoji for transport mode
     const transportEmoji = { DRIVING: '🚗', WALKING: '🚶', TRANSIT: '🚌', BICYCLING: '🚲' };
     const transportWord = { DRIVING: 'drive', WALKING: 'walk', TRANSIT: 'ride', BICYCLING: 'bike' };
-    const cleanEmoji = (em) => {
-        if (!em || em.includes('\uFFFD') || em.length > 5) return '📍';
-        return em;
-    };
-    // Format time from 24hr "HH:MM" to 12hr "h:mm AM/PM"
+    const cleanEmoji = (em) => (!em || em.includes('\uFFFD') || em.length > 5) ? '📍' : em;
     const formatTime = (t) => {
       if (!t) return '?';
       const [h, m] = t.split(':');
       const hr = parseInt(h);
       if (isNaN(hr)) return t;
-      const ampm = hr >= 12 ? 'PM' : 'AM';
-      const displayHr = hr % 12 || 12;
-      return `${displayHr}:${m} ${ampm}`;
+      return `${hr % 12 || 12}:${m} ${hr >= 12 ? 'PM' : 'AM'}`;
     };
 
-    return (
-      <div className="invite-stops-detail" style={{ marginTop: 12, marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 0 }}>
-        {inv.stops.map((s, idx) => (
-          <div key={idx}>
-            {/* Travel tag between stops - Bug #6: show correct transport emoji and word */}
-            {idx > 0 && (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '6px 0' }}>
-                <div style={{ flex: 1, height: 1, background: '#EDE5DA' }} />
-                <div style={{ padding: '4px 12px', background: '#F8F3EE', borderRadius: 100, fontSize: 11, color: '#9A8A78', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4 }}>
-                  {transportEmoji[s.transport_mode] || '🚗'} {s.eta_text_user || s.eta_text_friend || 'Travel'} {transportWord[s.transport_mode] || 'drive'}
-                </div>
-                <div style={{ flex: 1, height: 1, background: '#EDE5DA' }} />
-              </div>
-            )}
-            <div style={{ border: '1.5px solid #EDE5DA', borderRadius: 12, overflow: 'hidden', background: '#FAFAFA' }}>
-              {/* Bug #1: Always show MiniMap for all stops (sent and received plans) */}
-              <div style={{ height: 120, background: '#E0D8CE', position: 'relative' }}>
-                <div style={{ position: 'absolute', top: 10, left: 10, background: 'rgba(255,255,255,0.95)', color: '#2C2416', padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, zIndex: 10, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>Stop {idx + 1}</div>
-                {(s.start_time || s.end_time) && (
-                  <div style={{ position: 'absolute', top: 10, right: 10, background: 'rgba(212,98,42,0.9)', color: 'white', padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700, zIndex: 10, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
-                    🕐 {formatTime(s.start_time)} — {formatTime(s.end_time)}
-                  </div>
-                )}
-                {s.lat && s.lng ? (
-                  <MiniMap lat={s.lat} lng={s.lng} emoji={cleanEmoji(s.emoji)} />
-                ) : (
-                  <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9A8A78', fontSize: 13 }}>📍 Map unavailable</div>
-                )}
-              </div>
-              <div style={{ padding: 12 }}>
-                <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>{cleanEmoji(s.emoji)} {s.spot_name}</div>
-                <div style={{ fontSize: 12, color: '#9A8A78', marginBottom: 12, lineHeight: 1.4 }}>📍 {s.address || 'Address unlisted'}</div>
-                
-                <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-                  <button className="itin-opt-btn" style={{ flex: 1, padding: '10px 0', fontSize: 11, fontWeight: 700, margin: 0, background: 'white', borderRadius: 8 }} onClick={() => { setDirectionRoutes([]); setDirectionsLoaded(false); setShowDirectionsFor({ inv, stopIdx: idx }); }}>🛣️ See Directions</button>
-                  <button className="itin-opt-btn" style={{ flex: 1, padding: '10px 0', fontSize: 11, fontWeight: 700, margin: 0, background: 'white', borderRadius: 8 }} onClick={() => {
-                    // Bug #10: For idx > 0, use previous stop as origin, NOT user's home location
-                    let myStart;
-                    if (idx === 0) {
-                      myStart = inv.it_friend_id === user.id ? inv.friend_location : inv.user_location;
-                    } else {
-                      const prev = inv.stops[idx - 1];
-                      myStart = prev.address || `${prev.lat},${prev.lng}`;
-                    }
-                    const dest = s.address || `${s.lat},${s.lng}`;
-                    window.open(`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(myStart)}&destination=${encodeURIComponent(dest)}&travelmode=${(s.transport_mode || 'DRIVING').toLowerCase()}`, '_blank');
-                  }}>📱 Open maps</button>
-                </div>
-                
-                {/* Bug #3: Bigger explore button */}
-                <button className="itin-opt-btn" style={{ width: '100%', padding: '16px 0', fontSize: 14, fontWeight: 700, margin: '0 0 16px 0', background: 'linear-gradient(135deg, #F8F3EE, #FFF4EF)', color: '#D4622A', borderRadius: 12, border: '1.5px solid #FADED3', letterSpacing: 0.3, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }} onClick={() => {
-                   setShowExploreModal({ lat: s.lat, lng: s.lng, name: s.spot_name });
-                }}><span style={{ fontSize: 20 }}>🔍</span> Explore in area</button>
-                
-                <div style={{ display: 'flex', gap: 8 }}>
-                  {idx === 0 ? (
-                    <>
-                      <div style={{ flex: 1, background: '#FFF4EF', padding: 8, borderRadius: 8 }}>
-                        <span style={{ fontSize: 10, color: '#D4622A', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, display: 'block', marginBottom: 2 }}>{isReceived ? `${inv.sender_name}'s ETA` : 'Your ETA'}</span>
-                        {/* Bug #2: Show '—' instead of 'Calculating…' for saved plans */}
-                        <span style={{ fontSize: 13, color: '#2C2416', fontWeight: 600 }}>{s.eta_text_user || '—'}</span>
-                      </div>
-                      <div style={{ flex: 1, background: '#F6FBF7', padding: 8, borderRadius: 8 }}>
-                        <span style={{ fontSize: 10, color: '#3D8B4B', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, display: 'block', marginBottom: 2 }}>{isReceived ? 'Your ETA' : `${inv.receiver_name}'s ETA`}</span>
-                        <span style={{ fontSize: 13, color: '#2C2416', fontWeight: 600 }}>{s.eta_text_friend || '—'}</span>
-                      </div>
-                    </>
-                  ) : (
-                    <div style={{ flex: 1, background: '#F8F3EE', padding: 10, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: '1px dashed #D4622A' }}>
-                      <div>
-                        <span style={{ fontSize: 9, color: '#6B5B4E', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, display: 'block' }}>Travel from {inv.stops[idx-1].spot_name}</span>
-                        {/* Bug #6: Show correct transport emoji and word */}
-                        <span style={{ fontSize: 14, color: '#2C2416', fontWeight: 700 }}>{transportEmoji[s.transport_mode] || '🚗'} {s.eta_text_user || '—'} {transportWord[s.transport_mode] || 'drive'} together</span>
-                      </div>
-                      <div style={{ fontSize: 20 }}>🏁</div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
+    const total = inv.stops.length;
+    const isLastStep = stopStep === total - 1;
+
+    // ── single-stop card ──────────────────────────────────────────
+    const renderStopCard = (s, idx, compact = false) => (
+      <div key={idx} style={{ border: '1.5px solid #EDE5DA', borderRadius: 16, overflow: 'hidden', background: 'white', boxShadow: compact ? 'none' : '0 2px 12px rgba(0,0,0,0.06)' }}>
+        <div style={{ height: compact ? 80 : 160, background: '#E0D8CE', position: 'relative' }}>
+          <div style={{ position: 'absolute', top: 10, left: 10, background: 'rgba(44,36,22,0.85)', color: 'white', padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.6, zIndex: 10 }}>
+            Stop {idx + 1} of {total}
           </div>
-        ))}
+          {(s.start_time || s.end_time) && (
+            <div style={{ position: 'absolute', top: 10, right: 10, background: 'rgba(212,98,42,0.92)', color: 'white', padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700, zIndex: 10 }}>
+              🕐 {formatTime(s.start_time)} — {formatTime(s.end_time)}
+            </div>
+          )}
+          {s.lat && s.lng
+            ? <MiniMap lat={s.lat} lng={s.lng} emoji={cleanEmoji(s.emoji)} />
+            : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9A8A78', fontSize: 13 }}>📍 Map unavailable</div>}
+        </div>
+        <div style={{ padding: compact ? '10px 14px' : '14px 16px' }}>
+          <div style={{ fontWeight: 700, fontSize: compact ? 14 : 17, marginBottom: 2, color: '#2C2416' }}>{cleanEmoji(s.emoji)} {s.spot_name}</div>
+          <div style={{ fontSize: 12, color: '#9A8A78', marginBottom: 10, lineHeight: 1.4 }}>📍 {s.address || 'Address unlisted'}</div>
+          {(() => {
+            const btnBase = { fontWeight: 700, margin: 0, borderRadius: 8, cursor: 'pointer', fontFamily: 'DM Sans', border: 'none', padding: compact ? '7px 0' : '10px 0', fontSize: compact ? 11 : 11 };
+            return (<>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+              <button className="itin-opt-btn" style={{ ...btnBase, flex: 1, background: '#F8F3EE' }} onClick={() => { setDirectionRoutes([]); setDirectionsLoaded(false); setShowDirectionsFor({ inv, stopIdx: idx }); }}>🛣️ Directions</button>
+              <button className="itin-opt-btn" style={{ ...btnBase, flex: 1, background: '#F8F3EE' }} onClick={() => {
+                let myStart = idx === 0 ? (inv.it_friend_id === user.id ? inv.friend_location : inv.user_location) : (inv.stops[idx-1].address || `${inv.stops[idx-1].lat},${inv.stops[idx-1].lng}`);
+                window.open(`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(myStart)}&destination=${encodeURIComponent(s.address || `${s.lat},${s.lng}`)}&travelmode=${(s.transport_mode || 'DRIVING').toLowerCase()}`, '_blank');
+              }}>📱 Open in Maps</button>
+              <button className="itin-opt-btn" style={{ ...btnBase, flex: 1, background: 'linear-gradient(135deg, #F8F3EE, #FFF4EF)', color: '#D4622A', border: '1px solid #FADED3' }} onClick={() => {
+                handleSuggestChanges(inv, { silent: true, keepTab: true });
+                const lastStop = inv.stops[inv.stops.length - 1];
+                setShowExploreModal({ lat: lastStop.lat, lng: lastStop.lng, name: lastStop.spot_name });
+              }}>🔍 Explore</button>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {idx === 0 ? (<>
+                <div style={{ flex: 1, background: '#FFF4EF', padding: 8, borderRadius: 8 }}>
+                  <span style={{ fontSize: 10, color: '#D4622A', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, display: 'block', marginBottom: 2 }}>{isReceived ? `${inv.sender_name}'s ETA` : 'Your ETA'}</span>
+                  <span style={{ fontSize: 13, color: '#2C2416', fontWeight: 600 }}>{s.eta_text_user || '—'}</span>
+                </div>
+                <div style={{ flex: 1, background: '#F6FBF7', padding: 8, borderRadius: 8 }}>
+                  <span style={{ fontSize: 10, color: '#3D8B4B', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, display: 'block', marginBottom: 2 }}>{isReceived ? 'Your ETA' : `${inv.receiver_name || 'Friend'}'s ETA`}</span>
+                  <span style={{ fontSize: 13, color: '#2C2416', fontWeight: 600 }}>{s.eta_text_friend || '—'}</span>
+                </div>
+              </>) : (
+                <div style={{ flex: 1, background: '#F8F3EE', padding: 10, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: '1px dashed #D4622A' }}>
+                  <div>
+                    <span style={{ fontSize: 9, color: '#6B5B4E', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700, display: 'block' }}>From {inv.stops[idx-1].spot_name}</span>
+                    <span style={{ fontSize: 14, color: '#2C2416', fontWeight: 700 }}>{transportEmoji[s.transport_mode] || '🚗'} {s.eta_text_user || '—'} {transportWord[s.transport_mode] || 'drive'}</span>
+                  </div>
+                  <div style={{ fontSize: 20 }}>🏁</div>
+                </div>
+              )}
+            </div>
+          </>);
+          })()}
+        </div>
+      </div>
+    );
+
+    // ── SHOW-ALL view (after last step) ───────────────────────────
+    if (showAllStops) {
+      return (
+        <div style={{ marginTop: 16, marginBottom: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#9A8A78', textTransform: 'uppercase', letterSpacing: 0.5 }}>Full itinerary · {total} stop{total !== 1 ? 's' : ''}</div>
+            <div style={{ flex: 1, height: 1, background: '#EDE5DA' }} />
+          </div>
+          {inv.stops.map((s, idx) => (
+            <div key={idx}>
+              {idx > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '12px 0' }}>
+                  <div style={{ flex: 1, height: 2, background: 'linear-gradient(90deg, #EDE5DA, #D4622A22)' }} />
+                  <div style={{ padding: '4px 14px', background: '#FFF4EF', borderRadius: 100, fontSize: 11, color: '#D4622A', fontWeight: 600, border: '1px solid #FADED3', display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+                    {transportEmoji[s.transport_mode] || '🚗'} {s.eta_text_user || 'Travel'} {transportWord[s.transport_mode] || 'drive'}
+                  </div>
+                  <div style={{ flex: 1, height: 2, background: 'linear-gradient(90deg, #D4622A22, #EDE5DA)' }} />
+                </div>
+              )}
+              {renderStopCard(s, idx, true)}
+            </div>
+          ))}
+          <button onClick={() => { setStopStep(0); setShowAllStops(false); }} style={{ marginTop: 16, width: '100%', padding: '10px', borderRadius: 10, background: 'white', color: '#9A8A78', border: '1.5px solid #EDE5DA', fontFamily: 'DM Sans', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+            ← Back to step-by-step
+          </button>
+        </div>
+      );
+    }
+
+    // ── STEP-BY-STEP view ─────────────────────────────────────────
+    const s = inv.stops[stopStep];
+    return (
+      <div style={{ marginTop: 16, marginBottom: 8 }}>
+        {/* Progress dots */}
+        {total > 1 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 14 }}>
+            {inv.stops.map((_, i) => (
+              <div key={i} style={{ flex: i === stopStep ? 2 : 1, height: 4, borderRadius: 100, background: i === stopStep ? '#D4622A' : i < stopStep ? '#E07C5A88' : '#EDE5DA', transition: 'all 0.3s' }} />
+            ))}
+          </div>
+        )}
+
+        {renderStopCard(s, stopStep, false)}
+
+        <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+          {stopStep > 0 && (
+            <button onClick={() => setStopStep(p => p - 1)} style={{ padding: '12px 18px', borderRadius: 12, background: 'white', color: '#6B5B4E', border: '1.5px solid #EDE5DA', fontFamily: 'DM Sans', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>
+              ← Back
+            </button>
+          )}
+          {!isLastStep ? (
+            <button onClick={() => setStopStep(p => p + 1)} style={{ flex: 1, padding: '14px', borderRadius: 12, background: '#2C2416', color: 'white', border: 'none', fontFamily: 'DM Sans', fontSize: 15, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+              Next location → <span style={{ opacity: 0.7, fontSize: 13 }}>Stop {stopStep + 2} of {total}</span>
+            </button>
+          ) : (
+            <button onClick={() => setShowAllStops(true)} style={{ flex: 1, padding: '14px', borderRadius: 12, background: 'linear-gradient(135deg, #D4622A, #E07C5A)', color: 'white', border: 'none', fontFamily: 'DM Sans', fontSize: 15, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+              See full itinerary ✓
+            </button>
+          )}
+        </div>
+
+        {total > 1 && !isLastStep && (
+          <button onClick={() => setShowAllStops(true)} style={{ marginTop: 8, width: '100%', padding: '8px', borderRadius: 10, background: 'transparent', color: '#9A8A78', border: 'none', fontFamily: 'DM Sans', fontSize: 12, cursor: 'pointer', textDecoration: 'underline' }}>
+            Skip to full itinerary
+          </button>
+        )}
       </div>
     );
   }
@@ -692,7 +894,7 @@ export default function App() {
     <><style>{styles}</style><div className="app">
       {toast && <div className="toast">{toast}</div>}
 
-      <div className="narrow-container">
+      <div className="header-container">
         <div className="header"><div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div><div className="logo">the <span>middle</span> ground</div><div className="tagline">Meet halfway, no compromises</div></div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -712,7 +914,7 @@ export default function App() {
         </div>
       </div>
 
-      <div className="content" style={{ paddingBottom: itinerary.length > 0 ? 450 : 30 }}>
+      <div className="content" style={{ paddingBottom: tab === 'invites' ? 0 : itinerary.length > 0 ? 450 : 30, maxWidth: tab === 'invites' ? '100%' : undefined }}>
 
         {/* PLAN TAB */}
         {tab === "plan" && (<>
@@ -780,212 +982,369 @@ export default function App() {
             </div>
           </div>
 
-          <div style={{ padding: '0 10px' }}>
+          <div style={{ padding: '0 10px' }} className={itinerary.length > 0 ? 'map-container-with-itinerary' : ''}>
             {searched && midpoint && <MapExplorer isLoaded={isLoaded} coords={allCoords} midpoint={midpoint} peopleLabels={peopleLabels} itinerary={itinerary} onAddToItinerary={addToItinerary} onRemoveFromItinerary={removeFromItinerary} />}
             {!searched && !searchLoading && <div className="narrow-container"><div className="empty"><div className="empty-emoji">🤝</div><div className="empty-title">Ready to plan?</div><div className="empty-sub">Select friends and a location to find spots with real Google Maps ETAs.</div></div></div>}
           </div>
         </>)}
 
-        {/* INVITES TAB */}
-        {tab === "invites" && (<div className="narrow-container">
-          <div className="section-title">Your Invites</div>
+        {/* INVITES TAB — two-column inbox layout */}
+        {tab === "invites" && (() => {
+          // Build sent groups once
+          const sentGroups = [];
+          const seenIts = new Set();
+          sentList.forEach(inv => {
+            if (!seenIts.has(inv.itinerary_id)) {
+              seenIts.add(inv.itinerary_id);
+              sentGroups.push(sentList.filter(i => i.itinerary_id === inv.itinerary_id));
+            }
+          });
 
-          {/* RECEIVED / SENT TOGGLE */}
-          <div style={{ display: 'flex', gap: 0, marginBottom: 20, background: '#F0E8DD', borderRadius: 12, padding: 3 }}>
-            <button onClick={() => setInviteSubTab("received")} style={{
-              flex: 1, padding: '10px 0', borderRadius: 10, border: 'none', fontFamily: 'DM Sans', fontSize: 13, fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s',
-              background: inviteSubTab === 'received' ? 'white' : 'transparent',
-              color: inviteSubTab === 'received' ? '#D4622A' : '#9A8A78',
-              boxShadow: inviteSubTab === 'received' ? '0 2px 8px rgba(0,0,0,0.08)' : 'none',
-            }}>
-              💌 Received {receivedList.length > 0 && <span style={{ background: '#D4622A', color: 'white', borderRadius: 100, padding: '1px 7px', fontSize: 10, marginLeft: 4 }}>{receivedList.length}</span>}
-            </button>
-            <button onClick={() => setInviteSubTab("sent")} style={{
-              flex: 1, padding: '10px 0', borderRadius: 10, border: 'none', fontFamily: 'DM Sans', fontSize: 13, fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s',
-              background: inviteSubTab === 'sent' ? 'white' : 'transparent',
-              color: inviteSubTab === 'sent' ? '#D4622A' : '#9A8A78',
-              boxShadow: inviteSubTab === 'sent' ? '0 2px 8px rgba(0,0,0,0.08)' : 'none',
-            }}>
-              📤 Sent {sentList.length > 0 && <span style={{ background: '#9A8A78', color: 'white', borderRadius: 100, padding: '1px 7px', fontSize: 10, marginLeft: 4 }}>{sentList.length}</span>}
-            </button>
-          </div>
+          // Find the selected item (received invite or sent group primary)
+          const selectedReceived = inviteSubTab === 'received' ? receivedList.find(i => i.id === selectedInviteId) : null;
+          const selectedSentGroup = inviteSubTab === 'sent' ? sentGroups.find(g => g[0].itinerary_id === selectedInviteId) : null;
 
-          {/* RECEIVED INVITES */}
-          {inviteSubTab === "received" && (<>
-            {receivedList.length === 0 && <div className="empty"><div className="empty-emoji">💌</div><div className="empty-title">No invites received</div><div className="empty-sub">When friends send you a plan, it'll show up here!</div></div>}
-            {receivedList.filter(i => i.status === "pending").length > 0 && <div className="section-sub" style={{marginBottom: 10}}>{receivedList.filter(i => i.status === "pending").length} pending</div>}
-            {receivedList.map(inv => (
-              <div key={inv.id} className={`invite-card ${inv.status === "accepted" ? "accepted" : inv.status === "completed" ? "completed" : ""}`}>
-                <div className="invite-top">
-                  <div className="invite-avatar" style={{ background: inv.sender_color }}>{inv.sender_avatar}</div>
-                  <div className="invite-who">
-                    <div className="invite-name">{inv.sender_name} invited you</div>
-                    <div className="invite-date">🗓 {inv.event_date ? new Date(inv.event_date + 'T00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : inv.date_label || "No date set"}</div>
-                  </div>
-                  <span className={`invite-status ${inv.status}`}>{inv.status === "pending" ? "Pending" : inv.status === "accepted" ? "Going ✓" : inv.status === "counter" ? "Countered" : inv.status === "completed" ? "Done ✓" : "Declined"}</span>
-                </div>
-                {inv.message && <div className="invite-message">"{inv.message}"</div>}
-                {/* Show co-invitees if the sender enabled guest list visibility */}
-                {inv.co_invitees && inv.co_invitees.length > 0 && (
-                  <div style={{ marginBottom: 12, padding: '10px 12px', background: '#F8F3EE', borderRadius: 10, border: '1px solid #EDE5DA' }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: '#9A8A78', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>Also invited</div>
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                      {inv.co_invitees.map(ci => (
-                        <div key={ci.receiver_id} style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'white', borderRadius: 100, padding: '3px 10px 3px 3px', border: '1px solid #EDE5DA', fontSize: 12, fontWeight: 500 }}>
-                          <div style={{ width: 20, height: 20, borderRadius: '50%', background: ci.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 700, color: 'white' }}>{ci.avatar_letter}</div>
-                          {ci.name}
-                          <span style={{ fontSize: 9, color: ci.status === 'accepted' ? '#3D8B4B' : ci.status === 'declined' ? '#C0392B' : '#E07C2A', fontWeight: 600, marginLeft: 2 }}>
-                            {ci.status === 'accepted' ? '✓' : ci.status === 'declined' ? '✕' : '⏳'}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {renderDetailedStops(inv, true)}
-                <div className="invite-actions" style={{ flexDirection: 'column', gap: 8 }}>
-                  {inv.status === "pending" ? (
-                    <div style={{ display: 'flex', gap: 8, width: '100%' }}>
-                      <button className="accept-btn" onClick={() => handleInviteAction(inv.id, "accepted")}>✓ Accept</button>
-                      <button className="suggest-btn" style={{flex: 1, padding: "10px", borderRadius: 10, background: "#FFF4EF", color: "#D4622A", border: "1.5px solid #FADED3", fontFamily: "DM Sans", fontSize: 13, fontWeight: 600, cursor: "pointer"}} onClick={() => handleSuggestChanges(inv)}>✏️ Suggest Changes</button>
-                      <button className="decline-btn" onClick={() => handleInviteAction(inv.id, "declined")}>✕</button>
-                    </div>
-                  ) : inv.status === "completed" ? (
-                    <div className="status-msg" style={{ padding: 0, textAlign: 'center', color: '#6B8F71' }}>✅ Hangout completed!</div>
-                  ) : (
-                    <>
-                      {inv.status === "accepted" && <div className="status-msg green" style={{ padding: 0, textAlign: 'left', marginBottom: 4 }}>🎉 You're going!</div>}
-                      {inv.status === "declined" && <div className="status-msg" style={{ padding: 0, textAlign: 'left', marginBottom: 4, color: '#C0392B' }}>Declined</div>}
-                      {inv.status === "counter" && <div className="status-msg" style={{ padding: 0, textAlign: 'left', marginBottom: 4, color: '#D4622A' }}>Counter proposed</div>}
-                      <div style={{ display: 'flex', gap: 8, width: '100%' }}>
-                        {inv.status !== "accepted" && <button className="accept-btn" style={{ flex: 1, padding: '8px', fontSize: 12 }} onClick={() => handleInviteAction(inv.id, "accepted")}>Accept</button>}
-                        {inv.status !== "declined" && <button className="decline-btn" style={{ flex: 1, padding: '8px', fontSize: 12 }} onClick={() => handleInviteAction(inv.id, "declined")}>Decline</button>}
-                        <button className="suggest-btn" style={{flex: 2, padding: "8px", borderRadius: 10, background: "#FFF4EF", color: "#D4622A", border: "1.5px solid #FADED3", fontFamily: "DM Sans", fontSize: 12, fontWeight: 600, cursor: "pointer"}} onClick={() => handleSuggestChanges(inv)}>✏️ Edit Itinerary</button>
+          const statusLabel = (s) => s === 'pending' ? 'Pending' : s === 'accepted' ? 'Going ✓' : s === 'counter' ? 'Countered' : s === 'completed' ? 'Done ✓' : 'Declined';
+          const statusColor = (s) => s === 'accepted' || s === 'completed' ? '#3D8B4B' : s === 'declined' ? '#C0392B' : s === 'counter' ? '#D4622A' : '#9A8A78';
+          const statusBg = (s) => s === 'accepted' || s === 'completed' ? '#E8F5E9' : s === 'declined' ? '#FDECEA' : s === 'counter' ? '#FFF4EF' : '#F5F5F5';
+
+          return (
+            <div style={{ display: 'flex', height: 'calc(100vh - 120px)', overflow: 'hidden', padding: '0 16px 0 16px', gap: 0 }}>
+
+              {/* ── LEFT PANEL: summary list ── */}
+              <div style={{ width: 360, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1.5px solid #EDE5DA', paddingRight: 16 }}>
+                <div style={{ paddingTop: 20, paddingBottom: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                    <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 700, color: '#2C2416' }}>Invites</div>
+                    {selectMode ? (
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        {selectedForDelete.size > 0 && (
+                          <button onClick={handleMassDelete} style={{ padding: '6px 12px', borderRadius: 8, background: '#C0392B', color: 'white', border: 'none', fontFamily: 'DM Sans', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                            🗑 Delete ({selectedForDelete.size})
+                          </button>
+                        )}
+                        <button onClick={() => { setSelectMode(false); setSelectedForDelete(new Set()); }} style={{ padding: '6px 12px', borderRadius: 8, background: '#F0E8DD', color: '#6B5B4E', border: 'none', fontFamily: 'DM Sans', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                          Cancel
+                        </button>
                       </div>
-                      {inv.status === "accepted" && (
-                        <button onClick={() => handleInviteAction(inv.id, "completed")} style={{ width: '100%', marginTop: 4, padding: '8px', borderRadius: 10, background: '#E8F5E9', color: '#3D8B4B', border: '1.5px solid #C8E6C9', fontFamily: "'DM Sans'", fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>✅ Mark as Completed</button>
-                      )}
-                    </>
-                  )}
+                    ) : (
+                      <button onClick={() => setSelectMode(true)} style={{ padding: '6px 12px', borderRadius: 8, background: '#F0E8DD', color: '#6B5B4E', border: 'none', fontFamily: 'DM Sans', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                        Select
+                      </button>
+                    )}
+                  </div>
+                  {/* Tab toggle */}
+                  <div style={{ display: 'flex', gap: 0, background: '#F0E8DD', borderRadius: 10, padding: 3 }}>
+                    {[{ id: 'received', label: '💌 Received', count: receivedList.filter(i=>i.status==='pending').length },
+                      { id: 'sent', label: '📤 Sent', count: 0 }].map(t => (
+                      <button key={t.id} onClick={() => { setInviteSubTab(t.id); setSelectedInviteId(null); }} style={{
+                        flex: 1, padding: '8px 0', borderRadius: 8, border: 'none', fontFamily: 'DM Sans', fontSize: 13, fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s',
+                        background: inviteSubTab === t.id ? 'white' : 'transparent',
+                        color: inviteSubTab === t.id ? '#D4622A' : '#9A8A78',
+                        boxShadow: inviteSubTab === t.id ? '0 2px 8px rgba(0,0,0,0.08)' : 'none',
+                      }}>
+                        {t.label}{t.count > 0 && <span style={{ background: '#D4622A', color: 'white', borderRadius: 100, padding: '1px 6px', fontSize: 10, marginLeft: 5 }}>{t.count}</span>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Scrollable list */}
+                <div style={{ flex: 1, overflowY: 'auto', paddingBottom: 20 }}>
+                  {inviteSubTab === 'received' && (<>
+                    {receivedList.length === 0 && (
+                      <div style={{ textAlign: 'center', paddingTop: 60, color: '#9A8A78' }}>
+                        <div style={{ fontSize: 36, marginBottom: 8 }}>💌</div>
+                        <div style={{ fontWeight: 600, color: '#2C2416', marginBottom: 4 }}>No invites yet</div>
+                        <div style={{ fontSize: 13 }}>When friends invite you, they'll show here</div>
+                      </div>
+                    )}
+                    {receivedList.map(inv => {
+                      const relDate = formatRelativeDate(inv.event_date);
+                      const stopCount = inv.stops?.length || 0;
+                      const isSelected = selectedInviteId === inv.id;
+                      const isPending = inv.status === 'pending';
+                      const isChecked = selectedForDelete.has(inv.id);
+                      return (
+                        <div key={inv.id} onClick={() => {
+                          if (selectMode) {
+                            setSelectedForDelete(prev => { const n = new Set(prev); isChecked ? n.delete(inv.id) : n.add(inv.id); return n; });
+                          } else {
+                            setSelectedInviteId(inv.id);
+                          }
+                        }} style={{
+                          padding: '14px 12px', borderRadius: 12, marginBottom: 6, cursor: 'pointer', transition: 'all 0.15s',
+                          background: isChecked ? '#FDECEA' : isSelected ? '#FFF4EF' : 'white',
+                          border: isChecked ? '1.5px solid #C0392B' : isSelected ? '1.5px solid #D4622A' : '1.5px solid #EDE5DA',
+                          boxShadow: isSelected ? '0 2px 12px rgba(212,98,42,0.12)' : '0 1px 4px rgba(0,0,0,0.04)',
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            {selectMode && (
+                              <div style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${isChecked ? '#C0392B' : '#D4B8A8'}`, background: isChecked ? '#C0392B' : 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: 'white', fontSize: 13 }}>
+                                {isChecked && '✓'}
+                              </div>
+                            )}
+                            <div style={{ width: 40, height: 40, borderRadius: '50%', background: inv.sender_color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 700, color: 'white', flexShrink: 0, position: 'relative' }}>
+                              {inv.sender_avatar}
+                              {isPending && !selectMode && <div style={{ position: 'absolute', top: -2, right: -2, width: 10, height: 10, borderRadius: '50%', background: '#D4622A', border: '2px solid white' }} />}
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 14, fontWeight: isPending ? 700 : 600, color: '#2C2416', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {inv.sender_name}
+                              </div>
+                              <div style={{ fontSize: 12, color: '#6B5B4E', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                invited you to {stopCount} place{stopCount !== 1 ? 's' : ''}
+                                {relDate
+                                  ? <span style={{ color: '#D4622A', fontWeight: 600 }}> · {relDate}</span>
+                                  : <span style={{ color: '#9A8A78' }}> · No date set</span>}
+                              </div>
+                            </div>
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 100, background: statusBg(inv.status), color: statusColor(inv.status), flexShrink: 0 }}>
+                              {statusLabel(inv.status)}
+                            </span>
+                          </div>
+                          {inv.message && (
+                            <div style={{ marginTop: 8, fontSize: 12, color: '#9A8A78', fontStyle: 'italic', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingLeft: 50 }}>
+                              "{inv.message}"
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </>)}
+
+                  {inviteSubTab === 'sent' && (<>
+                    {sentGroups.length === 0 && (
+                      <div style={{ textAlign: 'center', paddingTop: 60, color: '#9A8A78' }}>
+                        <div style={{ fontSize: 36, marginBottom: 8 }}>📤</div>
+                        <div style={{ fontWeight: 600, color: '#2C2416', marginBottom: 4 }}>No invites sent</div>
+                        <div style={{ fontSize: 13 }}>Build a plan and send it to friends!</div>
+                      </div>
+                    )}
+                    {sentGroups.map(group => {
+                      const primary = group[0];
+                      const receivers = group.map(i => ({ id: i.receiver_id, name: i.receiver_name, avatar: i.receiver_avatar, color: i.receiver_color, status: i.status }));
+                      const allCompleted = group.every(i => i.status === 'completed');
+                      const anyAccepted = group.some(i => i.status === 'accepted');
+                      const combinedStatus = allCompleted ? 'completed' : anyAccepted ? 'accepted' : 'pending';
+                      const allNames = receivers.map(r => r.name);
+                      const nameStr = allNames.length === 1 ? allNames[0] : allNames.length === 2 ? allNames.join(' & ') : `${allNames[0]} & ${allNames.length - 1} others`;
+                      const stopCount = primary.stops?.length || 0;
+                      const relDate = formatRelativeDate(primary.event_date);
+                      const isSelected = selectedInviteId === primary.itinerary_id;
+                      const groupIds = group.map(i => i.id);
+                      const isChecked = groupIds.some(id => selectedForDelete.has(id));
+                      return (
+                        <div key={primary.itinerary_id} onClick={() => {
+                          if (selectMode) {
+                            setSelectedForDelete(prev => { const n = new Set(prev); isChecked ? groupIds.forEach(id => n.delete(id)) : groupIds.forEach(id => n.add(id)); return n; });
+                          } else {
+                            setSelectedInviteId(primary.itinerary_id);
+                          }
+                        }} style={{
+                          padding: '14px 12px', borderRadius: 12, marginBottom: 6, cursor: 'pointer', transition: 'all 0.15s',
+                          background: isChecked ? '#FDECEA' : isSelected ? '#FFF4EF' : 'white',
+                          border: isChecked ? '1.5px solid #C0392B' : isSelected ? '1.5px solid #D4622A' : '1.5px solid #EDE5DA',
+                          boxShadow: isSelected ? '0 2px 12px rgba(212,98,42,0.12)' : '0 1px 4px rgba(0,0,0,0.04)',
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            {selectMode && (
+                              <div style={{ width: 20, height: 20, borderRadius: 6, border: `2px solid ${isChecked ? '#C0392B' : '#D4B8A8'}`, background: isChecked ? '#C0392B' : 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: 'white', fontSize: 13 }}>
+                                {isChecked && '✓'}
+                              </div>
+                            )}
+                            <div style={{ display: 'flex', position: 'relative', width: Math.min(receivers.length, 3) * 14 + 26, height: 40, flexShrink: 0 }}>
+                              {receivers.slice(0, 3).map((r, i) => (
+                                <div key={r.id} style={{ width: 40, height: 40, borderRadius: '50%', background: r.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 700, color: 'white', border: '2px solid white', position: i === 0 ? 'relative' : 'absolute', left: i * 14, zIndex: 3-i }}>{r.avatar}</div>
+                              ))}
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 14, fontWeight: 600, color: '#2C2416', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {nameStr}
+                              </div>
+                              <div style={{ fontSize: 12, color: '#6B5B4E', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {stopCount} place{stopCount !== 1 ? 's' : ''}
+                                {relDate
+                                  ? <span style={{ color: '#D4622A', fontWeight: 600 }}> · {relDate}</span>
+                                  : <span style={{ color: '#9A8A78' }}> · No date set</span>}
+                              </div>
+                            </div>
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 100, background: statusBg(combinedStatus), color: statusColor(combinedStatus), flexShrink: 0 }}>
+                              {statusLabel(combinedStatus)}
+                            </span>
+                          </div>
+                          {primary.message && (
+                            <div style={{ marginTop: 8, fontSize: 12, color: '#9A8A78', fontStyle: 'italic', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', paddingLeft: 50 }}>
+                              "{primary.message}"
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </>)}
                 </div>
               </div>
-            ))}
-          </>)}
 
-          {/* SENT INVITES - Grouped by itinerary_id */}
-          {inviteSubTab === "sent" && (<>
-            {sentList.length === 0 && <div className="empty"><div className="empty-emoji">📤</div><div className="empty-title">No invites sent</div><div className="empty-sub">Build an itinerary in Plan and send it to friends!</div></div>}
-            {(() => {
-              // Group sent invites by itinerary_id
-              const grouped = [];
-              const seenItineraries = new Set();
-              sentList.forEach(inv => {
-                if (!seenItineraries.has(inv.itinerary_id)) {
-                  seenItineraries.add(inv.itinerary_id);
-                  const group = sentList.filter(i => i.itinerary_id === inv.itinerary_id);
-                  grouped.push(group);
-                }
-              });
-              return grouped.map(group => {
-                const primary = group[0]; // Use first invite for stops/date/message
-                const receivers = group.map(inv => ({
-                  id: inv.receiver_id,
-                  name: inv.receiver_name,
-                  avatar: inv.receiver_avatar,
-                  color: inv.receiver_color,
-                  status: inv.status,
-                  inviteId: inv.id,
-                }));
-                const allCompleted = group.every(inv => inv.status === 'completed');
-                const anyAccepted = group.some(inv => inv.status === 'accepted');
-                const allNames = receivers.map(r => r.name);
-                const displayNames = allNames.length <= 2 ? allNames.join(' & ') : `${allNames[0]} & ${allNames.length - 1} other${allNames.length - 1 > 1 ? 's' : ''}`;
-                const isExpanded = expandedGuestGroups[primary.itinerary_id];
-                const guestListHidden = !primary.show_guest_list;
+              {/* ── RIGHT PANEL: detail view ── */}
+              <div style={{ flex: 1, overflowY: 'auto', paddingLeft: 24, paddingTop: 20, paddingBottom: 40 }}>
+                {!selectedInviteId && (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#9A8A78', gap: 12 }}>
+                    <div style={{ fontSize: 48 }}>👈</div>
+                    <div style={{ fontWeight: 600, fontSize: 16, color: '#6B5B4E' }}>Select an invite to view details</div>
+                    <div style={{ fontSize: 13 }}>Click any invite from the list on the left</div>
+                  </div>
+                )}
 
-                return (
-                  <div key={primary.itinerary_id} className={`invite-card ${allCompleted ? "completed" : ""}`}>
-                    <div className="invite-top">
-                      {/* Stacked avatars for multiple receivers */}
-                      <div style={{ display: 'flex', position: 'relative', width: Math.min(receivers.length, 3) * 16 + 24 }}>
-                        {receivers.slice(0, 3).map((r, i) => (
-                          <div key={r.id} className="invite-avatar" style={{
-                            background: r.color,
-                            position: i > 0 ? 'absolute' : 'relative',
-                            left: i * 16,
-                            zIndex: 3 - i,
-                            border: '2px solid white',
-                            width: 36, height: 36, fontSize: 14,
-                          }}>{r.avatar}</div>
-                        ))}
-                        {receivers.length > 3 && (
-                          <div style={{
-                            position: 'absolute', left: 48, zIndex: 0,
-                            width: 36, height: 36, borderRadius: '50%',
-                            background: '#EDE5DA', display: 'flex', alignItems: 'center',
-                            justifyContent: 'center', fontSize: 10, fontWeight: 700,
-                            color: '#6B5B4E', border: '2px solid white'
-                          }}>+{receivers.length - 3}</div>
-                        )}
+                {/* RECEIVED detail */}
+                {selectedReceived && (() => {
+                  const inv = selectedReceived;
+                  return (
+                    <div>
+                      {/* Header */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20, paddingBottom: 20, borderBottom: '1.5px solid #EDE5DA' }}>
+                        <div style={{ width: 52, height: 52, borderRadius: '50%', background: inv.sender_color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, fontWeight: 700, color: 'white', flexShrink: 0 }}>{inv.sender_avatar}</div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, fontWeight: 700, color: '#2C2416' }}>{inv.sender_name} invited you</div>
+                          <div style={{ fontSize: 13, color: '#9A8A78', marginTop: 2 }}>
+                            {inv.stops?.length || 0} stop{(inv.stops?.length || 0) !== 1 ? 's' : ''}
+                            {renderEventDate(inv.event_date)}
+                          </div>
+                        </div>
+                        <span style={{ fontSize: 12, fontWeight: 700, padding: '5px 12px', borderRadius: 100, background: statusBg(inv.status), color: statusColor(inv.status) }}>
+                          {statusLabel(inv.status)}
+                        </span>
                       </div>
-                      <div className="invite-who">
-                        <div className="invite-name">You → {displayNames}</div>
-                        <div className="invite-date">🗓 {primary.event_date ? new Date(primary.event_date + 'T00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : "No date set"}</div>
-                      </div>
-                      {/* Show combined status */}
-                      <span className={`invite-status ${allCompleted ? 'completed' : anyAccepted ? 'accepted' : 'pending'}`}>
-                        {allCompleted ? 'Done ✓' : anyAccepted ? 'Going' : 'pending'}
-                      </span>
-                    </div>
 
-                    {/* Expandable guest list for 3+ people */}
-                    {receivers.length >= 2 && (
-                      <div style={{ marginBottom: 12 }}>
-                        <button
-                          onClick={() => setExpandedGuestGroups(prev => ({ ...prev, [primary.itinerary_id]: !prev[primary.itinerary_id] }))}
-                          style={{
-                            width: '100%', padding: '8px 12px', borderRadius: 10,
-                            border: '1px solid #EDE5DA', background: '#F8F3EE',
-                            fontFamily: 'DM Sans', fontSize: 12, fontWeight: 600,
-                            cursor: 'pointer', color: '#6B5B4E',
-                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                          }}
-                        >
-                          <span>👥 {receivers.length} people invited {guestListHidden && <span style={{ fontSize: 10, color: '#9A8A78', fontWeight: 400 }}>(hidden from guests)</span>}</span>
-                          <span style={{ fontSize: 14, transition: 'transform 0.2s', transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}>▾</span>
-                        </button>
-                        {isExpanded && (
-                          <div style={{ marginTop: 8, padding: '10px 12px', background: 'white', borderRadius: 10, border: '1px solid #EDE5DA' }}>
-                            {receivers.map(r => (
-                              <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: '1px solid #F5F0EB' }}>
-                                <div style={{ width: 28, height: 28, borderRadius: '50%', background: r.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: 'white', flexShrink: 0 }}>{r.avatar}</div>
-                                <div style={{ flex: 1, fontSize: 13, fontWeight: 500, color: '#2C2416' }}>{r.name}</div>
-                                <span className={`invite-status ${r.status}`} style={{ fontSize: 10, padding: '2px 8px' }}>
-                                  {r.status === 'accepted' ? 'Going ✓' : r.status === 'declined' ? 'Declined' : r.status === 'completed' ? 'Done ✓' : 'Pending'}
+                      {inv.message && (
+                        <div style={{ margin: '0 0 20px 0', padding: '14px 16px', background: '#FFF8F5', borderRadius: 12, borderLeft: '3px solid #D4622A', fontSize: 14, color: '#2C2416', fontStyle: 'italic', lineHeight: 1.5 }}>
+                          "{inv.message}"
+                        </div>
+                      )}
+
+                      {inv.co_invitees && inv.co_invitees.length > 0 && (
+                        <div style={{ marginBottom: 20, padding: '12px 14px', background: '#F8F3EE', borderRadius: 10, border: '1px solid #EDE5DA' }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: '#9A8A78', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Also invited</div>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            {inv.co_invitees.map(ci => (
+                              <div key={ci.receiver_id} style={{ display: 'flex', alignItems: 'center', gap: 4, background: 'white', borderRadius: 100, padding: '4px 10px 4px 4px', border: '1px solid #EDE5DA', fontSize: 12, fontWeight: 500 }}>
+                                <div style={{ width: 22, height: 22, borderRadius: '50%', background: ci.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, color: 'white' }}>{ci.avatar_letter}</div>
+                                {ci.name}
+                                <span style={{ fontSize: 10, color: ci.status === 'accepted' ? '#3D8B4B' : ci.status === 'declined' ? '#C0392B' : '#E07C2A', fontWeight: 700, marginLeft: 2 }}>
+                                  {ci.status === 'accepted' ? '✓' : ci.status === 'declined' ? '✕' : '⏳'}
                                 </span>
                               </div>
                             ))}
                           </div>
-                        )}
-                      </div>
-                    )}
+                        </div>
+                      )}
 
-                    {primary.message && (
-                      <div style={{ margin: '0 0 12px 0', padding: '10px 12px', background: '#F8F3EE', borderRadius: 8, borderLeft: '3px solid #D4622A', fontSize: 13, color: '#2C2416', fontStyle: 'italic' }}>
-                        "{primary.message}"
+                      {renderDetailedStops(inv, true)}
+
+                      <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {inv.status === 'pending' ? (
+                          <div style={{ display: 'flex', gap: 10 }}>
+                            <button className="accept-btn" style={{ flex: 1 }} onClick={() => handleInviteAction(inv.id, 'accepted')}>✓ Accept</button>
+                            <button className="suggest-btn" style={{ flex: 2, padding: '12px', borderRadius: 10, background: '#FFF4EF', color: '#D4622A', border: '1.5px solid #FADED3', fontFamily: 'DM Sans', fontSize: 14, fontWeight: 600, cursor: 'pointer' }} onClick={() => handleSuggestChanges(inv)}>✏️ Suggest Changes</button>
+                            <button className="decline-btn" onClick={() => handleInviteAction(inv.id, 'declined')}>✕</button>
+                          </div>
+                        ) : inv.status === 'completed' ? (
+                          <div style={{ padding: 12, textAlign: 'center', color: '#6B8F71', fontWeight: 600 }}>✅ Hangout completed!</div>
+                        ) : (
+                          <>
+                            {inv.status === 'accepted' && <div style={{ color: '#3D8B4B', fontWeight: 600, marginBottom: 4 }}>🎉 You're going!</div>}
+                            {inv.status === 'declined' && <div style={{ color: '#C0392B', fontWeight: 600, marginBottom: 4 }}>Declined</div>}
+                            {inv.status === 'counter' && <div style={{ color: '#D4622A', fontWeight: 600, marginBottom: 4 }}>Counter proposed</div>}
+                            <div style={{ display: 'flex', gap: 10 }}>
+                              {inv.status !== 'accepted' && <button className="accept-btn" style={{ flex: 1 }} onClick={() => handleInviteAction(inv.id, 'accepted')}>Accept</button>}
+                              {inv.status !== 'declined' && <button className="decline-btn" style={{ flex: 1 }} onClick={() => handleInviteAction(inv.id, 'declined')}>Decline</button>}
+                              <button className="suggest-btn" style={{ flex: 2, padding: '10px', borderRadius: 10, background: '#FFF4EF', color: '#D4622A', border: '1.5px solid #FADED3', fontFamily: 'DM Sans', fontSize: 13, fontWeight: 600, cursor: 'pointer' }} onClick={() => handleSuggestChanges(inv)}>✏️ Edit Itinerary</button>
+                            </div>
+                            {inv.status === 'accepted' && (
+                              <button onClick={() => handleInviteAction(inv.id, 'completed')} style={{ padding: '10px', borderRadius: 10, background: '#E8F5E9', color: '#3D8B4B', border: '1.5px solid #C8E6C9', fontFamily: 'DM Sans', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>✅ Mark as Completed</button>
+                            )}
+                          </>
+                        )}
+                        <button onClick={() => handleDeleteInvite(inv.id)} style={{ padding: '8px', borderRadius: 10, background: 'transparent', color: '#C0392B', border: '1.5px solid #F5C4BA', fontFamily: 'DM Sans', fontSize: 13, fontWeight: 600, cursor: 'pointer', width: '100%' }}>🗑 Delete Invite</button>
                       </div>
-                    )}
-                    {renderDetailedStops(primary, false)}
-                    <div className="invite-actions" style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                      <button className="suggest-btn" style={{flex: 1, padding: "10px", borderRadius: 10, background: "#FFF4EF", color: "#D4622A", border: "1.5px solid #FADED3", fontFamily: "DM Sans", fontSize: 13, fontWeight: 600, cursor: "pointer"}} onClick={() => handleSuggestChanges(primary)}>✏️ Edit & Resend</button>
-                      {anyAccepted && <button onClick={() => { group.forEach(inv => { if (inv.status === 'accepted') handleInviteAction(inv.id, 'completed'); }); }} style={{flex: 1, padding: "10px", borderRadius: 10, background: "#E8F5E9", color: "#3D8B4B", border: "1.5px solid #C8E6C9", fontFamily: "DM Sans", fontSize: 13, fontWeight: 600, cursor: "pointer"}}>✅ Mark Complete</button>}
                     </div>
-                  </div>
-                );
-              });
-            })()}
-          </>)}
-        </div>)}
+                  );
+                })()}
+
+                {/* SENT detail */}
+                {selectedSentGroup && (() => {
+                  const group = selectedSentGroup;
+                  const primary = group[0];
+                  const receivers = group.map(i => ({ id: i.receiver_id, name: i.receiver_name, avatar: i.receiver_avatar, color: i.receiver_color, status: i.status, inviteId: i.id }));
+                  const allCompleted = group.every(i => i.status === 'completed');
+                  const anyAccepted = group.some(i => i.status === 'accepted');
+                  const combinedStatus = allCompleted ? 'completed' : anyAccepted ? 'accepted' : 'pending';
+                  const allNames = receivers.map(r => r.name);
+                  const nameStr = allNames.length <= 2 ? allNames.join(' & ') : `${allNames[0]} & ${allNames.length - 1} others`;
+                  const isExpanded = expandedGuestGroups[primary.itinerary_id];
+                  return (
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20, paddingBottom: 20, borderBottom: '1.5px solid #EDE5DA' }}>
+                        <div style={{ display: 'flex', position: 'relative', width: Math.min(receivers.length, 3) * 16 + 36, height: 52, flexShrink: 0 }}>
+                          {receivers.slice(0, 3).map((r, i) => (
+                            <div key={r.id} style={{ width: 52, height: 52, borderRadius: '50%', background: r.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, fontWeight: 700, color: 'white', border: '2px solid white', position: i === 0 ? 'relative' : 'absolute', left: i * 16, zIndex: 3-i }}>{r.avatar}</div>
+                          ))}
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, fontWeight: 700, color: '#2C2416' }}>You invited {nameStr}</div>
+                          <div style={{ fontSize: 13, color: '#9A8A78', marginTop: 2 }}>
+                            {primary.stops?.length || 0} stop{(primary.stops?.length || 0) !== 1 ? 's' : ''}
+                            {renderEventDate(primary.event_date)}
+                          </div>
+                        </div>
+                        <span style={{ fontSize: 12, fontWeight: 700, padding: '5px 12px', borderRadius: 100, background: statusBg(combinedStatus), color: statusColor(combinedStatus) }}>
+                          {statusLabel(combinedStatus)}
+                        </span>
+                      </div>
+
+                      {/* Guest list */}
+                      {receivers.length >= 1 && (
+                        <div style={{ marginBottom: 20 }}>
+                          <button onClick={() => setExpandedGuestGroups(prev => ({ ...prev, [primary.itinerary_id]: !prev[primary.itinerary_id] }))}
+                            style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EDE5DA', background: '#F8F3EE', fontFamily: 'DM Sans', fontSize: 13, fontWeight: 600, cursor: 'pointer', color: '#6B5B4E', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <span>👥 {receivers.length} {receivers.length === 1 ? 'person' : 'people'} invited</span>
+                            <span style={{ fontSize: 14, transition: 'transform 0.2s', transform: isExpanded ? 'rotate(180deg)' : 'none' }}>▾</span>
+                          </button>
+                          {isExpanded && (
+                            <div style={{ marginTop: 8, padding: '10px 14px', background: 'white', borderRadius: 10, border: '1px solid #EDE5DA' }}>
+                              {receivers.map(r => (
+                                <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid #F5F0EB' }}>
+                                  <div style={{ width: 32, height: 32, borderRadius: '50%', background: r.color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: 'white', flexShrink: 0 }}>{r.avatar}</div>
+                                  <div style={{ flex: 1, fontSize: 14, fontWeight: 500 }}>{r.name}</div>
+                                  <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 100, background: statusBg(r.status), color: statusColor(r.status) }}>{statusLabel(r.status)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {primary.message && (
+                        <div style={{ margin: '0 0 20px 0', padding: '14px 16px', background: '#FFF8F5', borderRadius: 12, borderLeft: '3px solid #D4622A', fontSize: 14, color: '#2C2416', fontStyle: 'italic', lineHeight: 1.5 }}>
+                          "{primary.message}"
+                        </div>
+                      )}
+
+                      {renderDetailedStops(primary, false)}
+
+                      <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <div style={{ display: 'flex', gap: 10 }}>
+                          <button className="suggest-btn" style={{ flex: 1, padding: '12px', borderRadius: 10, background: '#FFF4EF', color: '#D4622A', border: '1.5px solid #FADED3', fontFamily: 'DM Sans', fontSize: 14, fontWeight: 600, cursor: 'pointer' }} onClick={() => handleSuggestChanges(primary)}>✏️ Edit & Resend</button>
+                          {anyAccepted && <button onClick={() => { group.forEach(inv => { if (inv.status === 'accepted') handleInviteAction(inv.id, 'completed'); }); }} style={{ flex: 1, padding: '12px', borderRadius: 10, background: '#E8F5E9', color: '#3D8B4B', border: '1.5px solid #C8E6C9', fontFamily: 'DM Sans', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>✅ Mark Complete</button>}
+                        </div>
+                        <button onClick={() => { group.forEach(inv => handleDeleteInvite(inv.id)); }} style={{ padding: '8px', borderRadius: 10, background: 'transparent', color: '#C0392B', border: '1.5px solid #F5C4BA', fontFamily: 'DM Sans', fontSize: 13, fontWeight: 600, cursor: 'pointer', width: '100%' }}>🗑 Delete Invite</button>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* FRIENDS TAB */}
         {tab === "friends" && (<div className="narrow-container">
@@ -1070,22 +1429,39 @@ export default function App() {
       </div>
 
       {/* ITINERARY BAR */}
-      {itinerary.length > 0 && (
+      {itinerary.length > 0 && !showInviteModal && (
         <div className="itin-bar">
           <div className="itin-header" style={{ padding: '20px 20px 8px', margin: 0 }}><div className="itin-title">{suggestingInviteId ? "Suggesting Changes" : "Your Plan"} · {itinerary.length} stop{itinerary.length > 1 ? "s" : ""}</div><span className="itin-toggle" onClick={() => { setItinerary([]); setSuggestingInviteId(null); setDraftOriginalItinerary(null); }}>Clear</span></div>
           <div className="itin-content" style={{ padding: '0 20px 20px', margin: 0 }}>
             {narrative.length > 0 && <div className="route-narrative" style={{ marginTop: 12 }}>{narrative.map((l, i) => <div key={i} className="narrative-line" dangerouslySetInnerHTML={{ __html: l }} />)}</div>}
             <div className="itin-stops" style={{ marginTop: 12 }}>{itinerary.map((stop, i) => (
-              <div key={stop.google_place_id} className="itin-stop-card" style={{ marginBottom: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                  <div style={{ width: 32, height: 32, borderRadius: 8, background: '#F8F3EE', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>{stop.emoji}</div>
+              <div
+                key={stop.google_place_id}
+                draggable
+                onDragStart={() => { dragSrcIdx.current = i; }}
+                onDragOver={e => { e.preventDefault(); setDragOverIdx(i); }}
+                onDragLeave={() => setDragOverIdx(null)}
+                onDrop={e => { e.preventDefault(); setDragOverIdx(null); reorderItinerary(dragSrcIdx.current, i); dragSrcIdx.current = null; }}
+                onDragEnd={() => { setDragOverIdx(null); dragSrcIdx.current = null; }}
+                className="itin-stop-card"
+                style={{ marginBottom: 8, border: dragOverIdx === i ? '2px dashed #D4622A' : undefined, opacity: dragSrcIdx.current === i ? 0.5 : 1, transition: 'border 0.15s, opacity 0.15s' }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  {/* Drag handle */}
+                  <div style={{ cursor: 'grab', color: '#C4B8AE', fontSize: 16, lineHeight: 1, padding: '2px 0', userSelect: 'none', flexShrink: 0 }} title="Drag to reorder">⠿</div>
+                  <div style={{ width: 30, height: 30, borderRadius: 8, background: '#F8F3EE', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17, flexShrink: 0 }}>{stop.emoji}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: '#2C2416', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{stop.name}</div>
                     <div style={{ fontSize: 11, color: '#D4622A', fontWeight: 600 }}>
-                      {stop.etas?.[0]?.text ? `🕒 Typically ${stop.etas[0].text} for you` : ''}
+                      {stop.etas?.[0]?.text ? `🕒 ${stop.etas[0].text} from ${i === 0 ? 'you' : 'prev stop'}` : ''}
                     </div>
                   </div>
-                  <button className="itin-remove" style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#9A8A78', padding: 4 }} onClick={() => removeFromItinerary(stop.google_place_id)}>×</button>
+                  {/* Up/down arrows */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 1, flexShrink: 0 }}>
+                    <button disabled={i === 0} onClick={() => reorderItinerary(i, i - 1)} style={{ background: 'none', border: 'none', cursor: i === 0 ? 'default' : 'pointer', color: i === 0 ? '#DDD' : '#9A8A78', fontSize: 11, lineHeight: 1, padding: '1px 3px' }}>▲</button>
+                    <button disabled={i === itinerary.length - 1} onClick={() => reorderItinerary(i, i + 1)} style={{ background: 'none', border: 'none', cursor: i === itinerary.length - 1 ? 'default' : 'pointer', color: i === itinerary.length - 1 ? '#DDD' : '#9A8A78', fontSize: 11, lineHeight: 1, padding: '1px 3px' }}>▼</button>
+                  </div>
+                  <button className="itin-remove" style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#9A8A78', padding: 4, flexShrink: 0 }} onClick={() => removeFromItinerary(stop.google_place_id)}>×</button>
                 </div>
                 <div className="transport-picker" style={{ marginBottom: 4 }}>
                   {TRANSPORT_MODES.map(m => (
@@ -1098,102 +1474,96 @@ export default function App() {
             ))}</div>
           </div>
           <div className="itin-actions" style={{ padding: '16px 20px', borderTop: '1.5px solid #F0E8DD', background: '#FDFCFB', borderRadius: '0 0 24px 24px' }}>
-            {selectedFriends.length > 0 && <button className="itin-send-btn" style={{ width: '100%', padding: '14px', borderRadius: 12, background: '#D4622A', color: 'white', border: 'none', fontFamily: 'DM Sans', fontSize: 15, fontWeight: 700, cursor: 'pointer', boxShadow: '0 4px 12px rgba(212,98,42,0.2)' }} onClick={() => setShowInviteModal(true)}>📬 Email Plan to {friendNames}</button>}
+            {selectedFriends.length > 0 && <button className="itin-send-btn" style={{ width: '100%', padding: '14px', borderRadius: 12, background: '#D4622A', color: 'white', border: 'none', fontFamily: 'DM Sans', fontSize: 15, fontWeight: 700, cursor: 'pointer', boxShadow: '0 4px 12px rgba(212,98,42,0.2)' }} onClick={() => setShowInviteModal(true)}>{suggestingInviteId ? `📬 Reply with Suggestion to ${friendNames}` : `📬 Send Invite to ${friendNames}`}</button>}
           </div>
         </div>
       )}
 
       {/* SEND INVITE MODAL */}
-      {showInviteModal && <div className="modal-overlay" onClick={() => setShowInviteModal(false)}><div className="modal" onClick={e => e.stopPropagation()} style={{ maxHeight: '85vh', overflowY: 'auto' }}>
-        <div className="modal-title">{suggestingInviteId ? "Send Suggestion" : `Send to ${friendNames}`}</div>
-        <div className="modal-sub">{itinerary.length} stops</div>
-
-        {/* Event Date */}
-        <div style={{ marginBottom: 16 }}>
-          <label style={{ fontSize: 12, fontWeight: 600, color: '#6B5B4E', textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', marginBottom: 6 }}>
-             📅 Event Date {suggestingInviteId && eventDate && <span style={{ color: '#D4622A', fontWeight: 700, fontSize: 10 }}>· KEEPING ORIGINAL</span>}
-          </label>
-          <input type="date" value={eventDate} onChange={e => setEventDate(e.target.value)} style={{ width: '100%', padding: '10px 14px', border: '1.5px solid #EDE5DA', borderRadius: 10, fontFamily: 'DM Sans', fontSize: 14, color: '#2C2416', boxSizing: 'border-box', background: '#FAFAFA' }} />
-        </div>
-
-        {/* Schedule Section */}
-        {/* Schedule Section */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <label style={{ fontSize: 12, fontWeight: 600, color: '#6B5B4E', textTransform: 'uppercase', letterSpacing: 0.5, display: 'block' }}>🕐 Day Schedule</label>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button 
-              onClick={() => setIs24h(false)} 
-              style={{ fontSize: 10, border: '1px solid #EDE5DA', background: !is24h ? '#2C2416' : 'white', color: !is24h ? 'white' : '#2C2416', padding: '2px 6px', borderRadius: 4, cursor: 'pointer' }}
-            >12H</button>
-            <button 
-              onClick={() => setIs24h(true)} 
-              style={{ fontSize: 10, border: '1px solid #EDE5DA', background: is24h ? '#2C2416' : 'white', color: is24h ? 'white' : '#2C2416', padding: '2px 6px', borderRadius: 4, cursor: 'pointer' }}
-            >24H</button>
+      {showInviteModal && <div className="itin-bar" style={{ zIndex: 1001 }} onClick={e => e.stopPropagation()}>
+        <div style={{ padding: '16px 20px 12px', borderBottom: '1.5px solid #F0E8DD', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div className="itin-title">{suggestingInviteId ? "Send Suggestion" : `Send to ${friendNames}`}</div>
+            <div style={{ fontSize: 12, color: '#9A8A78', marginTop: 2 }}>{itinerary.length} stop{itinerary.length !== 1 ? 's' : ''}</div>
           </div>
+          <button onClick={() => setShowInviteModal(false)} style={{ background: 'white', border: '1.5px solid #EDE5DA', borderRadius: '50%', width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#9A8A78', fontSize: 24, flexShrink: 0 }}>×</button>
         </div>
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-             <span style={{ fontSize: 11, color: '#9A8A78' }}>🌐 Time Zone:</span>
-             <select 
-               value={timezone} 
-               onChange={e => setTimezone(e.target.value)}
-               style={{ border: 'none', background: 'transparent', fontSize: 11, color: '#2C2416', fontWeight: 600, outline: 'none', cursor: 'pointer' }}
-             >
-                <option value={Intl.DateTimeFormat().resolvedOptions().timeZone}>Local ({Intl.DateTimeFormat().resolvedOptions().timeZone})</option>
-                <option value="America/New_York">New York (EST/EDT)</option>
-                <option value="America/Chicago">Chicago (CST/CDT)</option>
-                <option value="America/Denver">Denver (MST/MDT)</option>
-                <option value="America/Los_Angeles">Los Angeles (PST/PDT)</option>
-                <option value="Europe/London">London (GMT/BST)</option>
-                <option value="Asia/Tokyo">Tokyo (JST)</option>
-             </select>
-          </div>
-        </div>
-        <div className="modal-spots" style={{maxHeight: 300, overflowY: 'auto', marginBottom: 16}}>
-          {itinerary.map((s, idx) => (
-            <div key={s.google_place_id} className="modal-spot selected" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: 22 }}>{s.emoji}</span>
-                <div style={{ flex: 1 }}>
-                  <div className="modal-spot-name" style={{ fontSize: 13, fontWeight: 600 }}>Stop {idx + 1}: {s.name}</div>
-                  <div style={{ fontSize: 11, color: '#9A8A78' }}>{s.etas?.[0]?.text ? `ETA: ${s.etas[0].text}` : ''}</div>
-                </div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 20px' }}>
+
+        {/* ── DATE ── */}
+        {(() => {
+          const toYMD = (d) => d.toLocaleDateString('en-CA'); // YYYY-MM-DD
+          const today = new Date();
+          const chips = [
+            { label: 'Today', value: toYMD(today) },
+            { label: 'Tomorrow', value: toYMD(new Date(today.getTime() + 86400000)) },
+            ...(() => {
+              const days = [];
+              for (let d = 2; d <= 8; d++) {
+                const dt = new Date(today.getTime() + d * 86400000);
+                const wd = dt.getDay();
+                if (wd === 6 || wd === 0 || wd === 5) {
+                  const label = dt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+                  const val = toYMD(dt);
+                  if (!days.find(x => x.value === val)) days.push({ label, value: val });
+                  if (days.length === 3) break;
+                }
+              }
+              return days;
+            })(),
+          ];
+          return (
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ fontSize: 12, fontWeight: 700, color: '#6B5B4E', textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', marginBottom: 8 }}>
+                📅 Date <span style={{ color: '#C0392B' }}>*</span>
+              </label>
+              {/* Quick-pick chips */}
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+                {chips.map(c => (
+                  <button key={c.value} onClick={() => { setEventDate(c.value); setDateError(''); }} style={{ padding: '6px 12px', borderRadius: 100, border: '1.5px solid', fontFamily: 'DM Sans', fontSize: 12, fontWeight: 600, cursor: 'pointer', transition: 'all 0.15s', background: eventDate === c.value ? '#2C2416' : 'white', color: eventDate === c.value ? 'white' : '#6B5B4E', borderColor: eventDate === c.value ? '#2C2416' : '#EDE5DA' }}>
+                    {c.label}
+                  </button>
+                ))}
               </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <label style={{ fontSize: 10, color: '#9A8A78', fontWeight: 600 }}>
-                    Start {suggestingInviteId && stopSchedules[idx]?.start && stopSchedules[idx]?.start === draftOriginalItinerary?.[idx]?.start_time && <span style={{color: '#D4622A', fontSize: 9}}>· ORIGINAL</span>}
-                  </label>
-                  <input type="time" value={stopSchedules[idx]?.start || ''} onChange={e => setStopSchedules(prev => ({ ...prev, [idx]: { ...prev[idx], start: e.target.value } }))} style={{ padding: '6px 8px', border: '1px solid #EDE5DA', borderRadius: 6, fontFamily: 'DM Sans', fontSize: 12, color: '#2C2416', boxSizing: 'border-box' }} />
-                </div>
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <label style={{ fontSize: 10, color: '#9A8A78', fontWeight: 600 }}>
-                    End {suggestingInviteId && stopSchedules[idx]?.end && stopSchedules[idx]?.end === draftOriginalItinerary?.[idx]?.end_time && <span style={{color: '#D4622A', fontSize: 9}}>· ORIGINAL</span>}
-                  </label>
-                  <input type="time" value={stopSchedules[idx]?.end || ''} onChange={e => setStopSchedules(prev => ({ ...prev, [idx]: { ...prev[idx], end: e.target.value } }))} style={{ padding: '6px 8px', border: '1px solid #EDE5DA', borderRadius: 6, fontFamily: 'DM Sans', fontSize: 12, color: '#2C2416', boxSizing: 'border-box' }} />
-                </div>
-              </div>
-              {/* Visual feedback for format */}
-              <div style={{ fontSize: 10, color: '#9A8A78', textAlign: 'right' }}>
-                {stopSchedules[idx]?.start && stopSchedules[idx]?.end && (
-                  <span>
-                    Preview: {(() => {
-                      const format = (t) => {
-                        if (!t) return "";
-                        const [h, m] = t.split(":");
-                        if (is24h) return t;
-                        const hr = parseInt(h);
-                        const ampm = hr >= 12 ? "pm" : "am";
-                        const displayHr = hr % 12 || 12;
-                        return `${displayHr}:${m}${ampm}`;
-                      };
-                      return `${format(stopSchedules[idx].start)} - ${format(stopSchedules[idx].end)}`;
-                    })()}
-                  </span>
-                )}
-              </div>
+              {/* Or pick exact date */}
+              <input type="date" value={eventDate} onChange={e => { setEventDate(e.target.value); setDateError(''); }} style={{ width: '100%', padding: '10px 14px', border: `1.5px solid ${dateError ? '#C0392B' : '#EDE5DA'}`, borderRadius: 10, fontFamily: 'DM Sans', fontSize: 14, color: '#2C2416', boxSizing: 'border-box', background: '#FAFAFA' }} />
+              {dateError && <div style={{ color: '#C0392B', fontSize: 12, marginTop: 5, fontWeight: 500 }}>{dateError}</div>}
             </div>
-          ))}
+          );
+        })()}
+
+        {/* ── STOP TIMES ── */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 12, fontWeight: 700, color: '#6B5B4E', textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', marginBottom: 10 }}>🕐 Times <span style={{ fontWeight: 400, textTransform: 'none', color: '#9A8A78', fontSize: 11 }}>(optional)</span></label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {itinerary.map((s, idx) => {
+              const raw = stopTimeInputs[idx] ?? '';
+              const parsed = parseTimeRange(raw);
+              const hasValid = parsed.start || parsed.end;
+              const preview = [parsed.start && fmtTime(parsed.start), parsed.end && fmtTime(parsed.end)].filter(Boolean).join(' – ');
+              return (
+                <div key={s.google_place_id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ width: 28, height: 28, borderRadius: 8, background: '#F8F3EE', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, flexShrink: 0 }}>{s.emoji}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#2C2416', marginBottom: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Stop {idx + 1}: {s.name}</div>
+                    <input
+                      type="text"
+                      placeholder="e.g. 5pm–7pm or 5:30pm–8pm"
+                      value={raw}
+                      onChange={e => {
+                        const v = e.target.value;
+                        setStopTimeInputs(prev => ({ ...prev, [idx]: v }));
+                        const { start, end } = parseTimeRange(v);
+                        setStopSchedules(prev => ({ ...prev, [idx]: { start, end } }));
+                      }}
+                      style={{ width: '100%', padding: '8px 12px', border: '1.5px solid #EDE5DA', borderRadius: 8, fontFamily: 'DM Sans', fontSize: 13, color: '#2C2416', boxSizing: 'border-box', background: '#FAFAFA' }}
+                    />
+                  </div>
+                  {hasValid && <div style={{ fontSize: 11, color: '#6B8F71', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }}>✓ {preview}</div>}
+                </div>
+              );
+            })}
+          </div>
         </div>
         
         {suggestingInviteId && (
@@ -1259,29 +1629,6 @@ export default function App() {
             </div>
             <div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                <div>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: '#9A8A78', marginBottom: 4, display: 'block' }}>
-                    Username {user.username_last_changed_at && Math.ceil((new Date() - new Date(user.username_last_changed_at)) / (1000 * 60 * 60 * 24)) < 30 && <span style={{fontWeight: 400, fontSize: 10}}>(Locked for {30 - Math.ceil((new Date() - new Date(user.username_last_changed_at)) / (1000 * 60 * 60 * 24))} more days)</span>}
-                  </label>
-                  <input 
-                    type="text" 
-                    className="modal-input" 
-                    placeholder="Unique username" 
-                    value={settingsData.username} 
-                    onChange={e => setSettingsData(p => ({ ...p, username: e.target.value }))} 
-                    disabled={user.username_last_changed_at && Math.ceil((new Date() - new Date(user.username_last_changed_at)) / (1000 * 60 * 60 * 24)) < 30}
-                    style={{ 
-                      width: '100%', 
-                      padding: 12, 
-                      border: '1.5px solid #EDE5DA', 
-                      borderRadius: 10, 
-                      fontSize: 14,
-                      background: (user.username_last_changed_at && Math.ceil((new Date() - new Date(user.username_last_changed_at)) / (1000 * 60 * 60 * 24)) < 30) ? '#F5F5F5' : '#FAFAFA',
-                      color: (user.username_last_changed_at && Math.ceil((new Date() - new Date(user.username_last_changed_at)) / (1000 * 60 * 60 * 24)) < 30) ? '#9A8A78' : '#2C2416',
-                      cursor: (user.username_last_changed_at && Math.ceil((new Date() - new Date(user.username_last_changed_at)) / (1000 * 60 * 60 * 24)) < 30) ? 'not-allowed' : 'text'
-                    }} 
-                  />
-                </div>
                 <div>
                   <label style={{ fontSize: 12, fontWeight: 600, color: '#9A8A78', marginBottom: 4, display: 'block' }}>Display Name</label>
                   <input type="text" className="modal-input" placeholder="Your name (visible to friends)" value={settingsData.name} onChange={e => setSettingsData(p => ({ ...p, name: e.target.value }))} style={{ width: '100%', padding: 12, border: '1.5px solid #EDE5DA', borderRadius: 10, fontSize: 14 }} />
@@ -1413,8 +1760,8 @@ export default function App() {
 
       {/* DIRECTIONS DIALOG - Bug #8: Better multiple routes UI, fix "calculating route" text, Bug #10: correct origin */}
       {showDirectionsFor && (
-        <div className="modal-overlay" onClick={() => { setShowDirectionsFor(null); setDirectionRoutes([]); setDirectionsLoaded(false); setSelectedRouteIndex(0); }} style={{ zIndex: 9999 }}>
-          <div className="modal" key={showDirectionsFor.inv.id + "_" + showDirectionsFor.stopIdx} onClick={e => e.stopPropagation()} style={{ padding: 0, width: '100%', maxWidth: 450, borderRadius: '24px 24px 0 0', overflow: 'hidden', height: 'calc(100vh - 60px)', maxHeight: 950, display: 'flex', flexDirection: 'column' }}>
+        <div className="modal-overlay" onClick={() => { setShowDirectionsFor(null); setDirectionRoutes([]); setDirectionsLoaded(false); setSelectedRouteIndex(0); }} style={{ zIndex: 9999, alignItems: 'flex-end' }}>
+          <div className="modal" key={showDirectionsFor.inv.id + "_" + showDirectionsFor.stopIdx} onClick={e => e.stopPropagation()} style={{ padding: 0, width: '100%', maxWidth: 960, borderRadius: '24px 24px 0 0', overflow: 'hidden', height: 'calc(100vh - 60px)', display: 'flex', flexDirection: 'column' }}>
             <div style={{ padding: 16, borderBottom: '1.5px solid #EDE5DA', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
               <div style={{ fontWeight: 700, color: '#2C2416' }}>🛣️ Trip Directions</div>
               <button onClick={() => { setShowDirectionsFor(null); setDirectionRoutes([]); setDirectionsLoaded(false); setSelectedRouteIndex(0); }} style={{ background: 'none', border: 'none', fontSize: 24, padding: 4, cursor: 'pointer', color: '#9A8A78' }}>×</button>
@@ -1442,7 +1789,7 @@ export default function App() {
               </div>
             )}
             
-            <div style={{ height: 300, position: 'relative', flexShrink: 0 }}>
+            <div style={{ height: 420, position: 'relative', flexShrink: 0 }}>
               <DirectionsMap 
                 origin={showDirectionsFor.stopIdx === 0 
                   ? (showDirectionsFor.inv.it_friend_id === user.id ? (showDirectionsFor.inv.friend_location || showDirectionsFor.inv.sender_location || user?.location) : (showDirectionsFor.inv.user_location || user?.location))
@@ -1503,8 +1850,8 @@ export default function App() {
         <div className="explore-side-panel">
             <div style={{ padding: '16px 20px', borderBottom: '1.5px solid #EDE5DA', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#FAF6F1' }}>
                <div>
-                 <div className="modal-title" style={{ fontSize: 18, marginBottom: 2 }}>Nearby {showExploreModal.name}</div>
-                 <div style={{ fontSize: 12, color: '#9A8A78' }}>Add more stops to your trip</div>
+                 <div className="modal-title" style={{ fontSize: 18, marginBottom: 2 }}>Near {showExploreModal.name}</div>
+                 <div style={{ fontSize: 12, color: '#9A8A78' }}>Exploring around last stop · add to plan</div>
                </div>
                <button onClick={() => setShowExploreModal(null)} style={{ background: 'white', border: '1.5px solid #EDE5DA', borderRadius: '50%', width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: '#9A8A78', fontSize: 24 }}>×</button>
             </div>
@@ -1517,9 +1864,11 @@ export default function App() {
                  itinerary={itinerary} 
                  onAddToItinerary={(spot, etaData) => {
                    addToItinerary(spot, etaData);
-                   // Keep the panel open so they can add more!
+                   if (suggestingInviteId) {
+                     setSuggestMessage(prev => prev || `I added ${spot.name} to our plan!`);
+                   }
                    showToast(`Added ${spot.name}!`);
-                 }} 
+                 }}
                  onRemoveFromItinerary={removeFromItinerary} 
                />
             </div>
@@ -1534,19 +1883,13 @@ const styles = `
 ${FONTS}
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: 'DM Sans', sans-serif; background: #FAF6F1; color: #2C2416; }
-.app { max-width: 1000px; margin: 0 auto; min-height: 100vh; background: #FAF6F1; position: relative; overflow-x: hidden; transition: margin 0.3s, max-width 0.3s; }
-.narrow-container { max-width: 500px; margin: 0 auto; padding: 0 40px; box-sizing: border-box; transition: padding 0.3s; }
+.app { max-width: 100%; min-height: 100vh; background: #FAF6F1; position: relative; overflow-x: hidden; }
+.narrow-container { max-width: 1000px; margin: 0 auto; padding: 0 40px; box-sizing: border-box; }
+.header-container { max-width: 100%; padding: 0 40px; box-sizing: border-box; }
 
-@media (min-width: 1350px) {
-  .app { max-width: 1000px; margin: 0 auto; }
-}
-@media (max-width: 1350px) and (min-width: 820px) {
-  .app { max-width: 1000px; margin: 0 auto; }
-  .narrow-container { padding: 0 20px; }
-}
-@media (max-width: 820px) {
-  .app { max-width: 430px; margin: 0 auto; }
-  .narrow-container { padding: 0 20px; margin: 0 auto; max-width: 100%; }
+@media (max-width: 900px) {
+  .narrow-container { padding: 0 20px; max-width: 100%; }
+  .header-container { padding: 0 16px; }
 }
 
 /* Auth */
@@ -1573,7 +1916,7 @@ body { font-family: 'DM Sans', sans-serif; background: #FAF6F1; color: #2C2416; 
 .auth-link { background: none; border: none; color: #D4622A; font-weight: 600; cursor: pointer; font-size: 14px; font-family: 'DM Sans', sans-serif; }
 
 /* Header */
-.header { padding: 20px 20px 0; }
+.header { padding: 16px 0 0; }
 .logo { font-family: 'Playfair Display', serif; font-size: 26px; font-weight: 700; color: #2C2416; }
 .logo span { color: #D4622A; }
 .tagline { font-size: 12px; color: #9A8A78; letter-spacing: 0.5px; text-transform: uppercase; }
@@ -1581,7 +1924,7 @@ body { font-family: 'DM Sans', sans-serif; background: #FAF6F1; color: #2C2416; 
 .logout-btn { background: none; border: 1.5px solid #EDE5DA; border-radius: 8px; padding: 4px 8px; cursor: pointer; color: #9A8A78; font-size: 14px; }
 
 /* Nav */
-.nav { display: flex; gap: 4px; padding: 16px 20px 0; border-bottom: 1px solid #EDE5DA; }
+.nav { display: flex; gap: 4px; padding: 12px 0 0; border-bottom: 1px solid #EDE5DA; }
 .nav-btn { flex: 1; padding: 10px 4px; background: none; border: none; font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 500; color: #9A8A78; cursor: pointer; text-align: center; border-bottom: 2px solid transparent; transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.3px; }
 .nav-btn.active { color: #D4622A; border-bottom-color: #D4622A; }
 .nav-icon { font-size: 16px; display: block; margin-bottom: 2px; }
@@ -1626,6 +1969,13 @@ body { font-family: 'DM Sans', sans-serif; background: #FAF6F1; color: #2C2416; 
 
 /* Map */
 .map-explorer { margin-bottom: 16px; }
+.map-container-with-itinerary { margin-left: 460px; transition: margin-left 0.3s; }
+@media (max-width: 1350px) {
+  .map-container-with-itinerary { margin-left: 360px; }
+}
+@media (max-width: 820px) {
+  .map-container-with-itinerary { margin-left: 0; }
+}
 .map-container { height: 350px; border-radius: 16px; overflow: hidden; border: 1.5px solid #EDE5DA; margin-bottom: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
 .map-loading { height: 250px; display: flex; align-items: center; justify-content: center; background: #EDF2EC; border-radius: 16px; color: #9A8A78; }
 .map-categories { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -1633,7 +1983,7 @@ body { font-family: 'DM Sans', sans-serif; background: #FAF6F1; color: #2C2416; 
 .map-cat-btn.active { background: #2C2416; color: white; border-color: #2C2416; }
 .explore-back-btn { padding: 8px 14px; border-radius: 8px; border: 1.5px solid #D4622A; background: #FFF4EF; color: #D4622A; font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 600; cursor: pointer; margin-bottom: 12px; }
 .map-spots-count { font-family: 'Playfair Display', serif; font-size: 16px; font-weight: 600; margin-bottom: 12px; }
-.map-spots-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.map-spots-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
 .transport-btn { padding: 4px 8px; border-radius: 6px; border: 1px solid #EDE5DA; background: white; cursor: pointer; font-size: 12px; transition: all 0.15s; font-family: 'DM Sans', sans-serif; }
 .transport-btn.active { background: #2C2416; color: white; border-color: #2C2416; }
 .map-info-btn { flex: 1; padding: 8px; border-radius: 8px; border: 1.5px solid #D4622A; background: transparent; color: #D4622A; font-family: 'DM Sans', sans-serif; font-size: 11px; font-weight: 600; cursor: pointer; }
@@ -1660,11 +2010,11 @@ body { font-family: 'DM Sans', sans-serif; background: #FAF6F1; color: #2C2416; 
 .add-btn.added { background: #6B8F71; border-color: #6B8F71; color: white; }
 
 /* Itinerary */
-.itin-bar { position: fixed; bottom: 20px; left: max(20px, calc(50% - 250px - 440px)); width: 420px; background: white; border: 2.5px solid #D4622A; z-index: 100; box-shadow: 0 12px 60px rgba(0,0,0,0.15); max-height: calc(100vh - 40px); border-radius: 24px; transition: all 0.3s; display: flex; flex-direction: column; overflow: hidden; }
+.itin-bar { position: fixed; bottom: 20px; left: 20px; width: 420px; background: white; border: 2.5px solid #D4622A; z-index: 1002; box-shadow: 0 12px 60px rgba(0,0,0,0.15); max-height: calc(100vh - 40px); border-radius: 24px; transition: all 0.3s; display: flex; flex-direction: column; overflow: hidden; }
 .itin-content { overflow-y: auto; flex: 1; scrollbar-width: none; }
 .itin-content::-webkit-scrollbar { width: 0; display: none; }
-@media (max-width: 1350px) {
-  .itin-bar { left: 20px; width: 340px; }
+@media (max-width: 820px) {
+  .itin-bar { left: 50%; bottom: 0; transform: translateX(-50%); max-height: 75vh; border-radius: 20px 20px 0 0; width: 100%; max-width: 430px; }
 }
 @media (max-width: 820px) {
   .itin-bar { left: 50%; bottom: 0; transform: translateX(-50%); max-height: 75vh; border-radius: 20px 20px 0 0; width: 100%; max-width: 430px; }
@@ -1698,14 +2048,11 @@ body { font-family: 'DM Sans', sans-serif; background: #FAF6F1; color: #2C2416; 
 .fc-remove { padding: 6px 12px; border-radius: 8px; border: 1.5px solid #EDE5DA; background: white; font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 500; cursor: pointer; color: #9A8A78; flex-shrink: 0; }
 .fc-remove:hover { border-color: #C0392B; color: #C0392B; }
 
-/* Side Panel - Bug #3: Made bigger for better usability */
-.explore-side-panel { position: fixed; top: 20px; right: max(20px, calc(50% - 250px - 520px)); left: auto; width: 520px; background: white; border-radius: 24px; border: 1.5px solid #EDE5DA; box-shadow: 0 12px 60px rgba(0,0,0,0.15); z-index: 1000; display: flex; flex-direction: column; overflow: hidden; height: calc(100vh - 40px); transition: all 0.3s; scrollbar-width: none; }
+/* Side Panel — always anchored right of the itin-bar (20px + 420px + 20px gap = 460px) */
+.explore-side-panel { position: fixed; top: 20px; bottom: 20px; left: 460px; right: 20px; width: auto; background: white; border-radius: 24px; border: 1.5px solid #EDE5DA; box-shadow: 0 12px 60px rgba(0,0,0,0.15); z-index: 1000; display: flex; flex-direction: column; overflow: hidden; height: auto; transition: all 0.3s; scrollbar-width: none; }
 .explore-side-panel::-webkit-scrollbar { width: 0; display: none; }
-@media (max-width: 1350px) {
-  .explore-side-panel { right: 20px; width: 440px; }
-}
 @media (max-width: 820px) {
-  .explore-side-panel { left: 2.5%; right: auto; width: 95%; top: 2.5%; height: 95%; }
+  .explore-side-panel { left: 2.5%; right: 2.5%; bottom: 2.5%; top: 2.5%; }
 }
 
 /* Invite link */
@@ -1745,6 +2092,10 @@ body { font-family: 'DM Sans', sans-serif; background: #FAF6F1; color: #2C2416; 
 .modal { background: white; width: 100%; max-width: 430px; border-radius: 24px 24px 0 0; padding: 24px 20px 36px; animation: slideUp 0.3s ease; }
 @keyframes slideUp { from{transform:translateY(100%)}to{transform:translateY(0)} }
 @keyframes scaleIn { from{opacity:0;transform:scale(0.95)}to{opacity:1;transform:scale(1)} }
+@media (min-width: 900px) {
+  .modal-overlay { align-items: center; }
+  .modal { max-width: 640px; border-radius: 24px; padding: 28px 32px 32px; animation: scaleIn 0.2s ease; }
+}
 .modal-title { font-family: 'Playfair Display', serif; font-size: 20px; font-weight: 700; margin-bottom: 4px; }
 .modal-sub { font-size: 13px; color: #9A8A78; margin-bottom: 20px; }
 .modal-spots { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
